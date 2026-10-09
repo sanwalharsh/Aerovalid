@@ -13,18 +13,22 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import typer
 import yaml
 
 from aerovalid.core.config import load_config
+from aerovalid.core.errors import ConfigError
 from aerovalid.core.logging import setup_logging
 from aerovalid.core.manifest import (
     create_manifest,
     hash_config,
+    hash_file,
     read_manifest,
     update_step,
     write_manifest,
 )
+from aerovalid.prep.pipeline import preprocess_flight
 from aerovalid.sim.protocols import load_vehicle_params
 from aerovalid.sim.truth import TruthModel
 from aerovalid.sim.variants import load_all_variants, make_variant_v5
@@ -161,8 +165,6 @@ def load_timing_and_sensors(configs_dir: Path) -> tuple[dict[str, SensorModel], 
 def _write_generated_flights(
     run_dir: Path, flights: list[FlightArtifacts], truth: TruthModel
 ) -> dict[str, str]:
-    from aerovalid.core.manifest import hash_file
-
     raw_dir = run_dir / "raw"
     (raw_dir / "truth").mkdir(parents=True, exist_ok=True)
     (raw_dir / "telemetry").mkdir(parents=True, exist_ok=True)
@@ -249,7 +251,93 @@ def ingest(
 @app.command()
 def preprocess(config: Path = _CONFIG_OPTION, run_id: str | None = _RUN_ID_OPTION) -> None:
     """QC, clean, sync, resample, and align raw data (FR-PRP-001...011)."""
-    raise NotImplementedError("`fsa preprocess` is implemented in Phase 3.")
+    if run_id is None:
+        raise ConfigError("`fsa preprocess` requires --run-id (an existing `fsa generate` run).")
+    run_dir = Path("runs") / run_id
+    raw_dir = run_dir / "raw"
+    if not raw_dir.exists():
+        raise ConfigError(f"No raw/ artifacts found at {raw_dir}; run `fsa generate` first.")
+
+    setup_logging(run_id=run_id, log_file=run_dir / "log.txt")
+    study_config = load_config(config)
+    configs_dir = _configs_dir(config)
+    nominal = load_vehicle_params(study_config.vehicle.ref, configs_dir / "vehicles")
+
+    started_at = datetime.now(UTC).isoformat()
+    start_time = time.monotonic()
+    manifest = read_manifest(run_dir) if (run_dir / "run_manifest.json").exists() else None
+
+    qc_dir, sync_dir, aligned_dir = run_dir / "qc", run_dir / "sync", run_dir / "aligned"
+    for directory in (qc_dir, sync_dir, aligned_dir):
+        directory.mkdir(parents=True, exist_ok=True)
+
+    qc_rows: list[dict[str, object]] = []
+    sync_rows: list[dict[str, object]] = []
+    output_hashes: dict[str, str] = {}
+    flight_paths = sorted((raw_dir / "telemetry").glob("*.parquet"))
+
+    for telemetry_path in flight_paths:
+        flight_id = telemetry_path.stem
+        telemetry = pd.read_parquet(telemetry_path)
+        variants_raw_dir = raw_dir / "variants"
+        variant_dirs = sorted(variants_raw_dir.iterdir()) if variants_raw_dir.exists() else []
+        variant_trajectories = {
+            d.name: pd.read_parquet(d / f"{flight_id}.parquet")
+            for d in variant_dirs
+            if (d / f"{flight_id}.parquet").exists()
+        }
+
+        result = preprocess_flight(
+            flight_id,
+            telemetry,
+            variant_trajectories,
+            study_config.preprocess,
+            nominal.wing_area_m2,
+        )
+
+        qc_path = qc_dir / f"{flight_id}.json"
+        qc_path.write_text(result.qc.model_dump_json(indent=2))
+        output_hashes[str(qc_path.relative_to(run_dir))] = hash_file(qc_path)
+        qc_rows.append(result.qc.model_dump())
+
+        for variant_name, estimate in result.sync_estimates.items():
+            sync_rows.append(
+                {
+                    "flight_id": flight_id,
+                    "variant": variant_name,
+                    "lag_s": estimate.lag_s,
+                    "drift_ppm": estimate.drift_ppm,
+                    "peak_correlation": estimate.peak_correlation,
+                    "low_confidence": estimate.low_confidence,
+                }
+            )
+
+        for variant_name, aligned in result.aligned.items():
+            variant_dir = aligned_dir / variant_name
+            variant_dir.mkdir(parents=True, exist_ok=True)
+            aligned_path = variant_dir / f"{flight_id}.parquet"
+            aligned.df.to_parquet(aligned_path, index=False)
+            output_hashes[str(aligned_path.relative_to(run_dir))] = hash_file(aligned_path)
+
+    pd.DataFrame(qc_rows).to_parquet(qc_dir / "qc_summary.parquet", index=False)
+    pd.DataFrame(sync_rows).to_parquet(sync_dir / "sync_estimates.parquet", index=False)
+    all_variants = sorted({str(row["variant"]) for row in sync_rows})
+    index = {"flights": [p.stem for p in flight_paths], "variants": all_variants}
+    (aligned_dir / "index.json").write_text(json.dumps(index, indent=2))
+
+    if manifest is not None:
+        manifest = update_step(
+            manifest,
+            "preprocess",
+            "completed",
+            started_at=started_at,
+            completed_at=datetime.now(UTC).isoformat(),
+            duration_s=time.monotonic() - start_time,
+            output_hashes=output_hashes,
+            extra={"n_flights": len(flight_paths)},
+        )
+        write_manifest(manifest, run_dir)
+    logger.info("preprocess: processed %d flights in %s", len(flight_paths), run_dir)
 
 
 @app.command()

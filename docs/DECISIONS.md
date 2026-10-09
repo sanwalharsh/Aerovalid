@@ -160,3 +160,48 @@ replay will be slightly optimistic until Phase 3 lands a real state estimator an
 `generate_flight` is updated to use it; this does not affect windowed re-initialisation
 (`run_windowed`), which is unaffected by this flight-level choice and already accepts
 an externally supplied init state per window.
+
+## ADR-011: `prep/clean.py` rebases `t_s` to start at 0
+
+**Context:** data spec §4.1 defines `t_s` as "seconds from flight start; strictly
+increasing *after cleaning*" -- implying raw tables need not start at `t_s = 0`. Raw
+telemetry legitimately doesn't: `telemetry/defects.py`'s constant clock-offset defect
+(sampled from `[-0.8, 0.8]` s, sim spec §6) can shift a whole flight's `t_s` to start at
+a negative value. `core/schema.py`'s canonical schema requires `t_s >= 0` for every
+table, including the aligned output `prep/align.py` builds -- so without rebasing,
+`fsa preprocess` fails schema validation on any flight whose sampled offset happens to
+be negative (hit immediately by the first `@pytest.mark.slow` CLI preprocessing test).
+**Decision:** `prep/clean.py::clean()` subtracts the first (sorted, deduped) sample's
+`t_s` from the whole column, so cleaned -- and everything downstream (resampled,
+aligned) -- output always starts at `t_s = 0`, matching the spec's "after cleaning"
+qualifier exactly. Raw `truth`/`telemetry`/variant Parquet files are untouched (not
+schema-validated at write time in Phase 2) and keep whatever clock-offset-shifted axis
+they were generated with.
+**Consequences:** a variant's trajectory is resampled onto the *cleaned, rebased*
+telemetry's grid (`prep/pipeline.py` passes `obs_grid` explicitly), so both tables in
+every aligned dataset share the same post-rebase zero point; `prep/sync.py`'s lag
+estimate is unaffected since cross-correlation only depends on relative, not absolute, time.
+
+## ADR-012: sync drift estimate uses two bookend windows, not several evenly-spaced ones
+
+**Context:** FR-PRP-003 requires drift recovery within +-10 ppm. An initial
+implementation split the overlap into 5 equal windows, estimated each window's lag via
+cross-correlation, and fit a line (lag vs. window-centre time) for the slope. Tested
+against synthetic data with known injected drift (dedicated unit tests, not just this
+ADR's say-so), that approach's error ranged from several to ~13 ppm -- failing the
+target on more than one injected case.
+**Decision:** use exactly two windows, each the first/last 20% of the overlap
+(`_DRIFT_WINDOW_FRACTION`), and fit the slope through only those two lag estimates.
+Drift is a slope (`delta_lag / delta_t`); with a fixed per-window lag-estimation noise
+floor, maximising `delta_t` (by using the two ends of the whole flight rather than
+several closely-spaced interior points) minimises how much that per-window noise gets
+amplified into the ppm estimate. Combined with upsampling the cross-correlation grid
+(`_UPSAMPLE_FACTOR = 5`, computed via FFT-based `scipy.signal.correlate` rather than
+`numpy.correlate`'s direct O(n*m) algorithm, which would be too slow at that
+resolution), measured error across several injected offset/drift combinations
+(`tests/unit/test_sync.py`) stays within 0.07-3.5 ppm -- comfortably inside the +-10 ppm
+target.
+**Consequences:** the drift estimate now needs only two confident (correlation above
+`_LOW_CORRELATION_THRESHOLD`) windows rather than three, so it activates slightly more
+often on noisy/short flights; `estimate_drift=False` remains available to skip it
+entirely when only the constant lag is needed.

@@ -92,3 +92,43 @@ verified manually at small scale and by an automated `@pytest.mark.slow` CLI tes
 sensor noise/bias recovery within 5%; fixture CSV with non-SI units ingests to SI schema
 correctly; per-flight fault log (`meta/<flight>.json` + aggregate `faults.json`) present.
 ULog/DataFlash adapter (FR-TEL-006, priority S) deferred -- see DECISIONS.md ADR-009.
+
+## Phase 3 — Preprocessing & Alignment
+
+- Added `prep/qc.py` (`qc_report`: missing %, duplicate/non-monotonic timestamps,
+  registry-driven range violations, stuck/flatline detection, z-score spike counts,
+  sample-rate stats; quarantines flights with >5% non-monotonic timestamps per data spec §8).
+- Added `prep/clean.py` (vectorised rolling-median Hampel filter; gap policy that
+  interpolates NaN *runs* up to `max_gap_s` and masks longer ones entirely, unlike
+  `Series.interpolate(limit=...)`'s partial-fill-from-one-side behaviour; rebases `t_s`
+  to start at 0 per data spec §4.1 "after cleaning" -- see DECISIONS.md ADR-011).
+- Added `prep/sync.py` (cross-correlation lag + linear-drift estimation on z-scored,
+  centred-difference reference signals, upsampled 5x with FFT-based correlation for
+  sub-sample precision, parabolic peak refinement, block-bootstrap CI; drift uses two
+  bookend windows rather than several evenly spaced ones -- see DECISIONS.md ADR-012
+  for why, and the accuracy numbers that justify it).
+- Added `prep/resample.py` (zero-phase anti-alias low-pass + linear interpolation onto
+  a regular or explicit grid -- the latter lets a variant's trajectory land on
+  telemetry's exact grid for alignment).
+- Added `prep/features.py` (Mach/q, Savitzky-Golay climb/turn-rate derivatives,
+  specific energy/power; `cl_eff` only when a wing area is supplied -- never a
+  meaningless unitless placeholder).
+- Added `prep/phases.py` (rule-based climb/descend/turn/accel/cruise segmentation with
+  a minimum-duration debounce; condition-bin tagging for altitude/Mach/bank/load factor).
+- Added `prep/state_estimate.py` (Savitzky-Golay smoother for windowed re-init, with
+  angle unwrap/rewrap) and `prep/align.py` (`obs_/sim_/res_/mask_/cond_/phase` aligned
+  table builder, angle-aware residuals, canonical-schema validated).
+- Added `prep/pipeline.py` (`preprocess_flight`: orchestrates QC -> clean -> resample ->
+  features -> phases/conditions -> sync -> align for one flight against every variant;
+  pure in-memory, per CLAUDE.md §7).
+- Implemented `fsa preprocess`: writes `qc/<flight>.json` + `qc_summary.parquet`,
+  `sync/sync_estimates.parquet`, `aligned/<variant>/<flight>.parquet` + `index.json`,
+  manifest-tracked.
+
+DoD: Hampel filter removes >= 95% of injected spikes (tested); sync recovers injected
+offset within +-0.5 sample and drift within +-10 ppm across several injected
+offset/drift combinations (`tests/unit/test_sync.py`; see ADR-012 for the windowing
+redesign this took); phase segmentation matches a scripted flight >= 90%; aligned tables
+pass canonical-schema validation with equal row counts across variants (by construction
+-- every variant is resampled onto the same telemetry grid). `fsa generate` ->
+`fsa preprocess` verified end to end (`@pytest.mark.slow` CLI test).

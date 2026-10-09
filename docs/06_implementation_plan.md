@@ -28,9 +28,9 @@ DoD: all sim-spec tests pass; every scenario × variant runs w/o NaN; V5-vs-trut
 - [x] `fsa generate`, `fsa ingest` commands; artifact layout per data spec §6; schema validation.
 DoD: `fsa generate --profile demo` produces 12 flights deterministically (hash-identical re-run); statistical sensor tests pass; fixture CSV with non-SI units ingests correctly; faults log present. (FR-TEL-001…007, FR-COR-005)
 
-## Phase 3 — Preprocessing & alignment  `[ ]`
-- [ ] QC, cleaning (Hampel, gaps), sync (xcorr + drift + CI), resampling, features, phases, condition tags, state-estimate smoother, aligned dataset builder, windowed builder.
-- [ ] `fsa preprocess` writes `qc/`, `sync/`, `aligned/`.
+## Phase 3 — Preprocessing & alignment  `[x]`
+- [x] QC, cleaning (Hampel, gaps), sync (xcorr + drift + CI), resampling, features, phases, condition tags, state-estimate smoother, aligned dataset builder, windowed builder (windowed builder already in Phase 1's `sim/runners.py::run_windowed`).
+- [x] `fsa preprocess` writes `qc/`, `sync/`, `aligned/`.
 DoD: recovery tests: offset ±0.5 sample, drift within 10 ppm, spikes ≥ 95% removed, phase accuracy ≥ 90%; aligned schema valid; row counts equal across variants. (FR-PRP-001…011)
 
 ## Phase 4 — Validation & condition analysis  `[ ]`
