@@ -352,3 +352,45 @@ hit the S6 recall/FAR/delay targets -- those remain a benchmark-level claim defe
 Phase 8/9's `fsa benchmark` (ADR-015's precedent), not an expectation for every ad-hoc
 `fsa detect` invocation. The CLI integration test therefore asserts artifact structure
 and value ranges, not specific recall/precision numbers, on its small fixture run.
+
+## ADR-019: `fsa identify`'s CLI scope, and raw telemetry's sensor warm-up transient
+
+**Context:** FR-IDN-001...008 covers output-error fitting, local (Jacobian) and global
+(Morris/Sobol) sensitivity, regime-wise fits with a Cochran's-Q heterogeneity test, a
+recommendation engine, re-validation, and two "S"-priority extras (a GP/GBM surrogate,
+a structural-term probe). Following ADR-015/017/018's precedent, the CLI covers a
+tractable, representative path and the rest stays library-only (fully implemented,
+unit-tested: `test_identify_jacobian.py`, `test_identify_fit.py`, `test_identify_
+sensitivity.py`, `test_identify_regimes.py`, `test_identify_revalidate.py`,
+`test_identify_recommendations.py`).
+**Decision:** `fsa identify` fits `identify.params` for one variant against one
+flight's first 60 s (`_IDENTIFY_FIT_WINDOW_CAP_S`), computes the Jacobian and
+identifiability diagnostics at that fit, runs Morris screening only (`n_trajectories=
+4`, not the config's full `sobol.n=1024` Saltelli sweep -- that stays library-only),
+builds recommendations (reading a prior `fsa validate` run's `metrics_signal.parquet`
+for condition evidence when available), and re-validates on up to two held-out
+flights. Regime-wise fitting (FR-IDN-004, needs multiple full `fit_parameters` calls)
+and the surrogate/structural-term probes (FR-IDN-007/008) are not wired into the CLI.
+Missing `identify.bounds` entries default to `+-20%` of the nominal value -- a
+representative prior uncertainty for an aerodynamic coefficient that's already roughly
+known, not a wide-open search range that would make every fit bound-hug.
+While validating this against a demo run, the refit variant's revalidation RMSE was
+catastrophically worse than the original (orders of magnitude, not a modest
+regression) -- traced to `telemetry/sensors.py::apply_sensor_model`'s `lfilter` call
+running with a zero initial condition, so every raw telemetry flight's first ~1-2 s
+ramps from 0 toward the true signal value rather than reflecting it (the same root
+cause ADR-018 found for `fsa detect`, here corrupting the *replay seed state* when
+`identify`'s fit/revalidation code took a flight's literal first telemetry row as its
+initial altitude/airspeed/etc.). `fsa identify` now discards each flight's first
+`_IDENTIFY_WARMUP_S = 2.0` s (same constant and rationale as ADR-018) before using it
+to fit, seed a replay, or re-validate.
+**Consequences:** jointly fitting several correlated aerodynamic parameters from one
+short single-maneuver window remains a genuinely under-determined problem -- the
+demo's fit still shows some parameters pinned at their bounds and
+`identifiability.poorly_identifiable` correctly flags them; revalidation may still
+show a modest regression on held-out flights rather than an improvement. That is the
+diagnostic doing its job (flagging an unreliable fit), not a remaining bug, and is why
+`recommendations.json` only asserts non-hypothesis claims where >= 2 independent
+evidence types agree (FR-IDN-005). The CLI integration test asserts artifact structure
+and that the identifiability/recommendation machinery runs correctly, not that this
+small fixture's fit happens to generalize well.

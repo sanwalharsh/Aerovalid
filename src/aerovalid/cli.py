@@ -35,7 +35,7 @@ from aerovalid.predict.cv import CVResult
 from aerovalid.predict.datasets import WindowedDataset
 from aerovalid.predict.models import ResidualModel
 from aerovalid.prep.pipeline import preprocess_flight
-from aerovalid.sim.protocols import load_vehicle_params
+from aerovalid.sim.protocols import VehicleParams, load_vehicle_params
 from aerovalid.sim.truth import TruthModel
 from aerovalid.sim.variants import load_all_variants, make_variant_v5
 from aerovalid.telemetry.adapters.base import ColumnMapping
@@ -1178,10 +1178,286 @@ def detect(config: Path = _CONFIG_OPTION, run_id: str | None = _RUN_ID_OPTION) -
     )
 
 
+_IDENTIFY_FIT_WINDOW_CAP_S = 60.0
+_IDENTIFY_HORIZON_S = 15.0
+_IDENTIFY_STRIDE_S = 15.0
+_IDENTIFY_NONCOMPLIANCE_THRESHOLD = 0.9
+_IDENTIFY_WARMUP_S = 2.0  # sensor lag filter's zero-initial-condition transient (ADR-018/019)
+
+
+def _identify_trim_warmup(telemetry: pd.DataFrame) -> pd.DataFrame:
+    """Discard raw telemetry's first `_IDENTIFY_WARMUP_S` s: the sensor lag filter
+    (`telemetry/sensors.py::apply_sensor_model`'s `lfilter`) starts from a zero
+    initial condition, so every flight's first ~1-2 s ramps from 0 toward the true
+    signal rather than reflecting it -- the same characteristic ADR-018 found and
+    trimmed for `fsa detect`. Using this transient as a replay seed (`state_from_row`
+    on an untrimmed flight's first row) corrupts the *initial state* with a huge,
+    spurious error, not just a few noisy samples."""
+    cutoff = telemetry["t_s"].min() + _IDENTIFY_WARMUP_S
+    trimmed: pd.DataFrame = telemetry[telemetry["t_s"] >= cutoff].reset_index(drop=True)
+    return trimmed
+
+
+def _identify_default_bounds(
+    configured: dict[str, tuple[float, float]], params: list[str], nominal: VehicleParams
+) -> dict[str, tuple[float, float]]:
+    """Fill in any `identify.params` entry missing from `identify.bounds` with
+    `+-20%` of its nominal value -- a representative prior uncertainty for an
+    aerodynamic coefficient that's already roughly known, not a wide-open search
+    range (FR-IDN-002: "bounds from config priors")."""
+    resolved = dict(configured)
+    for name in params:
+        if name not in resolved:
+            value = getattr(nominal, name)
+            resolved[name] = (0.8 * value, 1.2 * value)
+    return resolved
+
+
+def _identify_signal_weights(signals: list[str]) -> dict[str, float]:
+    from aerovalid.core.signals import get_signal
+
+    weights = {}
+    for name in signals:
+        tol = get_signal(name).default_tolerance
+        if tol:
+            weights[name] = 1.0 / tol
+    return weights
+
+
+def _identify_non_compliant_signals(run_dir: Path, variant: str) -> set[str]:
+    """Signals below `_IDENTIFY_NONCOMPLIANCE_THRESHOLD` tolerance compliance, from a
+    prior `fsa validate` run; empty (no condition evidence) if none exists."""
+    path = run_dir / "validation" / "metrics_signal.parquet"
+    if not path.exists():
+        return set()
+    table = pd.read_parquet(path)
+    table = table[table["variant"] == variant]
+    noncompliant = table[table["tol_compliance"] < _IDENTIFY_NONCOMPLIANCE_THRESHOLD]
+    return set(noncompliant["signal"].unique())
+
+
+def _identify_proxy_metric(
+    values: np.ndarray,
+    param_names: list[str],
+    nominal: VehicleParams,
+    switches: object,
+    dt_s: float,
+    telemetry: pd.DataFrame,
+    signals: list[str],
+    weights: dict[str, float],
+) -> float:
+    """RMS of the fit's own weighted residual vector -- a cheap scalar proxy metric
+    for sensitivity analysis (FR-IDN-001), reusing the exact same forward model as
+    the fit itself rather than a separate, possibly-inconsistent metric."""
+    from aerovalid.identify.fit import residual_vector
+
+    residual = residual_vector(
+        values,
+        param_names,
+        nominal,
+        switches,  # type: ignore[arg-type]
+        dt_s,
+        telemetry,
+        signals,
+        weights,
+        _IDENTIFY_HORIZON_S,
+        _IDENTIFY_STRIDE_S,
+    )
+    return float(np.sqrt(np.mean(residual**2))) if residual.size else float("nan")
+
+
 @app.command()
 def identify(config: Path = _CONFIG_OPTION, run_id: str | None = _RUN_ID_OPTION) -> None:
-    """Parameter sensitivity, identification, and recommendations (FR-IDN-001...008)."""
-    raise NotImplementedError("`fsa identify` is implemented in Phase 7.")
+    """Output-error parameter fitting, local/global sensitivity, and evidence-linked
+    recommendations for a single variant, fit against one flight's first
+    `_IDENTIFY_FIT_WINDOW_CAP_S` s and re-validated on held-out flights
+    (FR-IDN-001...006). Regime-wise fitting (FR-IDN-004), the full Sobol sweep, and
+    the surrogate/structural-term probes (FR-IDN-007/008) are the library's job
+    (`identify/`, unit-tested), not this CLI's -- see DECISIONS.md ADR-019.
+    """
+    from aerovalid.identify.fit import fit_parameters
+    from aerovalid.identify.jacobian import central_difference_jacobian, identifiability
+    from aerovalid.identify.recommendations import build_recommendations
+    from aerovalid.identify.revalidate import build_variant_star, revalidate_on_held_out_flights
+    from aerovalid.identify.sensitivity import morris_screen
+    from aerovalid.sim.variants import load_variant_yaml
+
+    if run_id is None:
+        raise ConfigError("`fsa identify` requires --run-id (an existing `fsa generate` run).")
+    run_dir = Path("runs") / run_id
+    raw_dir = run_dir / "raw"
+    if not raw_dir.exists():
+        raise ConfigError(f"No raw/ artifacts found at {raw_dir}; run `fsa generate` first.")
+
+    setup_logging(run_id=run_id, log_file=run_dir / "log.txt")
+    study_config = load_config(config)
+    configs_dir = _configs_dir(config)
+    nominal = load_vehicle_params(study_config.vehicle.ref, configs_dir / "vehicles")
+    variant_name = next((v for v in study_config.variants if v != "V5"), study_config.variants[0])
+    variant_spec = load_variant_yaml(variant_name, configs_dir / "variants")
+
+    flight_paths = sorted((raw_dir / "telemetry").glob("*.parquet"))
+    if not flight_paths:
+        raise ConfigError(f"No telemetry flights found at {raw_dir}; run `fsa generate` first.")
+    fit_flight_id = flight_paths[0].stem
+    fit_telemetry = _identify_trim_warmup(pd.read_parquet(flight_paths[0]))
+    fit_telemetry = fit_telemetry[
+        fit_telemetry["t_s"] <= fit_telemetry["t_s"].iloc[0] + _IDENTIFY_FIT_WINDOW_CAP_S
+    ]
+
+    param_names = study_config.identify.params
+    bounds = _identify_default_bounds(study_config.identify.bounds, param_names, nominal)
+    signals = ["alt_m"]
+    weights = _identify_signal_weights(signals)
+
+    started_at = datetime.now(UTC).isoformat()
+    start_time = time.monotonic()
+    identify_dir = run_dir / "identify"
+    identify_dir.mkdir(parents=True, exist_ok=True)
+    output_hashes: dict[str, str] = {}
+
+    fit_result = fit_parameters(
+        param_names,
+        bounds,
+        nominal,
+        variant_spec.switches,
+        variant_spec.dt_s,
+        fit_telemetry,
+        signals,
+        weights,
+        horizon_s=_IDENTIFY_HORIZON_S,
+        stride_s=_IDENTIFY_STRIDE_S,
+    )
+
+    def _residual_at(values: np.ndarray) -> np.ndarray:
+        from aerovalid.identify.fit import residual_vector
+
+        return residual_vector(
+            values,
+            param_names,
+            nominal,
+            variant_spec.switches,
+            variant_spec.dt_s,
+            fit_telemetry,
+            signals,
+            weights,
+            _IDENTIFY_HORIZON_S,
+            _IDENTIFY_STRIDE_S,
+        )
+
+    jacobian = central_difference_jacobian(_residual_at, fit_result.fitted_values)
+    identifiability_result = identifiability(
+        jacobian, fit_result.residuals, fit_result.fitted_values, param_names
+    )
+
+    sensitivity_table = morris_screen(
+        lambda values: _identify_proxy_metric(
+            values,
+            param_names,
+            nominal,
+            variant_spec.switches,
+            variant_spec.dt_s,
+            fit_telemetry,
+            signals,
+            weights,
+        ),
+        param_names,
+        [bounds[name] for name in param_names],
+        n_trajectories=4,
+        seed=study_config.study.seed,
+    )
+    sensitive_params = set(sensitivity_table.nlargest(2, "mu_star")["parameter"])
+
+    non_compliant_signals = _identify_non_compliant_signals(run_dir, variant_name)
+    recommendations = build_recommendations(
+        target_variant=variant_name,
+        nominal_values={name: getattr(nominal, name) for name in param_names},
+        fit_result=fit_result,
+        identifiability_result=identifiability_result,
+        sensitive_params=sensitive_params,
+        non_compliant_signals=non_compliant_signals or set(signals),
+        signal_to_fit_params={signal: set(param_names) for signal in signals},
+    )
+
+    revalidation_table = pd.DataFrame()
+    if study_config.identify.revalidate and len(flight_paths) > 1:
+        held_out_ids = [p.stem for p in flight_paths[1:3]]
+        held_out_telemetry = {
+            fid: _identify_trim_warmup(pd.read_parquet(raw_dir / "telemetry" / f"{fid}.parquet"))
+            for fid in held_out_ids
+        }
+        original_trajectories = {
+            fid: pd.read_parquet(raw_dir / "variants" / variant_name / f"{fid}.parquet")
+            for fid in held_out_ids
+            if (raw_dir / "variants" / variant_name / f"{fid}.parquet").exists()
+        }
+        if original_trajectories:
+            variant_star = build_variant_star(
+                nominal, fit_result.params, variant_spec.switches, variant_spec.dt_s, name="V_star"
+            )
+            revalidation_table = revalidate_on_held_out_flights(
+                variant_star,
+                original_trajectories,
+                {fid: held_out_telemetry[fid] for fid in original_trajectories},
+                signals=["alt_m", "vel_air_mps"],
+            )
+
+    def _write(df: pd.DataFrame, name: str) -> None:
+        path = identify_dir / name
+        df.to_parquet(path, index=False)
+        output_hashes[str(path.relative_to(run_dir))] = hash_file(path)
+
+    _write(sensitivity_table, "sensitivity.parquet")
+    _write(revalidation_table, "revalidation.parquet")
+
+    fit_results_path = identify_dir / "fit_results.json"
+    fit_results_path.write_text(
+        json.dumps(
+            {
+                "variant": variant_name,
+                "fit_flight_id": fit_flight_id,
+                "params": fit_result.params,
+                "cost": fit_result.cost,
+                "success": fit_result.success,
+            },
+            indent=2,
+        )
+    )
+    output_hashes[str(fit_results_path.relative_to(run_dir))] = hash_file(fit_results_path)
+
+    identifiability_path = identify_dir / "identifiability.json"
+    identifiability_path.write_text(
+        json.dumps(
+            {
+                "ci_95": identifiability_result.ci_95,
+                "condition_number": identifiability_result.condition_number,
+                "poorly_identifiable": identifiability_result.poorly_identifiable,
+            },
+            indent=2,
+        )
+    )
+    output_hashes[str(identifiability_path.relative_to(run_dir))] = hash_file(identifiability_path)
+
+    recommendations_path = identify_dir / "recommendations.json"
+    recommendations_path.write_text(json.dumps([r.to_dict() for r in recommendations], indent=2))
+    output_hashes[str(recommendations_path.relative_to(run_dir))] = hash_file(recommendations_path)
+
+    manifest = read_manifest(run_dir) if (run_dir / "run_manifest.json").exists() else None
+    if manifest is not None:
+        manifest = update_step(
+            manifest,
+            "identify",
+            "completed",
+            started_at=started_at,
+            completed_at=datetime.now(UTC).isoformat(),
+            duration_s=time.monotonic() - start_time,
+            output_hashes=output_hashes,
+            extra={"variant": variant_name, "n_params": len(param_names)},
+        )
+        write_manifest(manifest, run_dir)
+    logger.info(
+        "identify: wrote fit/sensitivity/recommendations for %s to %s", variant_name, identify_dir
+    )
 
 
 @app.command()

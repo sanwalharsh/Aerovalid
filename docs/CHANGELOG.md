@@ -243,3 +243,43 @@ fault, producing calibrated alarms and metrics for every configured detector. Fu
 benchmark validation (median delay ≤ 5 s, FAR ≤ 1/flight-hour, recall ≥ 0.9) against
 the real simulator deferred to Phase 8/9's `fsa benchmark` (ADR-015/018 precedent).
 `make lint test` green.
+
+## Phase 7 — Identification, Sensitivity & Recommendations
+
+- Added `identify/jacobian.py` (central finite-difference Jacobian; parameter
+  covariance/Wald CIs via `s^2 (J^T J)^-1`; condition-number and pairwise-correlation
+  identifiability flags), `identify/fit.py` (output-error fitting via `scipy.optimize.
+  least_squares` with soft-L1 loss, reusing `sim/runners.py::run_windowed`'s windowed
+  re-initialisation to avoid chaotic drift -- exactly the method `docs/05_analysis_
+  methods.md` §10 specifies), `identify/sensitivity.py` (Morris screening and Sobol/
+  Saltelli indices via SALib, generic over any scalar model function), `identify/
+  regimes.py` (per-regime refits; Cochran's Q heterogeneity test, meta-analysis form,
+  to flag regime-dependent parameter drift as evidence of missing model structure),
+  `identify/recommendations.py` (evidence-linked recommendations; never asserts a
+  claim with fewer than 2 independent evidence types, labelling it `hypothesis`
+  instead), and `identify/revalidate.py` (builds a refit variant V*, replays it on
+  held-out flights, compares RMSE against the original).
+- Implemented `fsa identify`: fits `identify.params` for one variant against one
+  flight's first 60 s, computes Jacobian/identifiability diagnostics, runs Morris
+  screening, builds recommendations (pulling condition evidence from a prior `fsa
+  validate` run when available), and re-validates on held-out flights. While
+  validating this against a demo run, found and fixed the same raw-telemetry
+  sensor-warm-up transient ADR-018 discovered for `fsa detect` -- here it was
+  corrupting the *replay seed state*, not just a few samples, causing a
+  catastrophically bad (not just noisy) revalidation result; both are now trimmed
+  via the same `_WARMUP_S` pattern. Regime-wise fitting, the full Sobol sweep, and
+  the surrogate/structural-term probes are library-only (not CLI-wired) -- see
+  ADR-019.
+
+DoD: `central_difference_jacobian` reproduces a known linear function's exact
+coefficients, and `identifiability` correctly flags a deliberately collinear parameter
+pair (`test_identify_jacobian.py`); `sobol_indices`/`morris_screen` rank a dominant
+parameter first and assign near-zero sensitivity to an inert one on an analytic test
+model (`test_identify_sensitivity.py`); a controlled self-consistency test (same model
+structure generates and fits the data) recovers an injected +20% CD0 error
+(`test_identify_fit.py`) and the corresponding refit genuinely reduces held-out RMSE
+(`test_identify_revalidate.py`); every recommendation has ≥ 2 evidence types or is
+labelled `hypothesis` (`test_identify_recommendations.py`); `fsa generate -> identify`
+verified end-to-end (`@pytest.mark.slow` CLI test). Full S7/S8 benchmark validation
+against the real simulator deferred to Phase 8/9's `fsa benchmark` (ADR-015/018/019
+precedent). `make lint test` green.

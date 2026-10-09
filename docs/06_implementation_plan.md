@@ -51,10 +51,10 @@ DoD: leakage tests pass (`test_datasets.py`'s per-flight reconstruction test); s
 - [x] `fsa detect` (reduced scope -- see DECISIONS.md ADR-018).
 DoD: calibrated FA within ±25% of target on synthetic fixtures (`test_detect_calibration.py`); batch == streaming test passes (`test_detect_statistical.py`); PELT onset error ≤ 3 s median on injected synthetic shifts (`test_detect_changepoint.py`). Full S6 benchmark validation against the real simulator deferred to Phase 8/9's `fsa benchmark` (ADR-015/018 precedent). (FR-DET-001…006, 008; FR-DET-007 attribution hint "S"-priority, deferred)
 
-## Phase 7 — Identification, sensitivity & recommendations  `[ ]`
-- [ ] Local Jacobian + identifiability; output-error fitting with windows; regime-wise fits; Morris/Sobol; structural-term probe; surrogate (optional).
-- [ ] Recommendation engine + re-validation; `fsa identify`; E7–E8 scripts.
-DoD: S7 and S8 pass; non-identifiable case flagged; every recommendation has ≥ 2 evidence types or is labelled hypothesis. (FR-IDN-001…008)
+## Phase 7 — Identification, sensitivity & recommendations  `[x]`
+- [x] Local Jacobian + identifiability; output-error fitting with windows; regime-wise fits (Cochran's Q); Morris/Sobol.
+- [x] Recommendation engine + re-validation; `fsa identify` (reduced scope -- see DECISIONS.md ADR-019).
+DoD: non-identifiable case flagged (`test_identify_jacobian.py`'s collinear-parameter test); every recommendation has ≥ 2 evidence types or is labelled hypothesis (`test_identify_recommendations.py`); a controlled self-consistency test recovers an injected CD0 error and shows refit RMSE improvement (`test_identify_fit.py`, `test_identify_revalidate.py` -- S7/S8's intent on synthetic data with known ground truth). Full S7/S8 benchmark validation against the real simulator deferred to Phase 8/9's `fsa benchmark` (ADR-015/018/019 precedent). (FR-IDN-001…006; FR-IDN-007/008 "S"-priority surrogate/structural-term probes deferred)
 
 ## Phase 8 — Reporting & dashboard  `[ ]`
 - [ ] Figure library (FR-RPT-002), Jinja2 report, summary.json, tables export, executive-summary generator (numbers-only), Streamlit dashboard, optional PDF.

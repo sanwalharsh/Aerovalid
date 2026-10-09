@@ -38,7 +38,7 @@ def test_help_lists_all_commands() -> None:
 
 
 @pytest.mark.req("FR-OPS-001")
-@pytest.mark.parametrize("command", ["identify", "report"])
+@pytest.mark.parametrize("command", ["report"])
 def test_unimplemented_commands_raise_not_implemented(command: str) -> None:
     with pytest.raises(NotImplementedError):
         runner.invoke(app, [command], catch_exceptions=False)
@@ -303,3 +303,58 @@ def test_detect_cli_produces_calibrated_alarms_and_metrics(
 
     manifest = json.loads((run_dir / "run_manifest.json").read_text())
     assert manifest["steps"]["detect"]["status"] == "completed"
+
+
+@pytest.mark.slow
+@pytest.mark.req("FR-IDN-002")
+def test_identify_cli_produces_fit_identifiability_and_recommendations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config = _REPO_ROOT / "configs" / "default.yaml"
+    generate_args = [
+        "generate",
+        "--config",
+        str(config),
+        "--run-id",
+        "clitest",
+        "--set",
+        "generate.n_flights=3",
+        "--set",
+        "generate.scenarios=[doublet_series]",
+        "--set",
+        "variants=[V0]",
+    ]
+    assert runner.invoke(app, generate_args, catch_exceptions=False).exit_code == 0
+
+    identify_args = ["identify", "--config", str(config), "--run-id", "clitest"]
+    result = runner.invoke(app, identify_args, catch_exceptions=False)
+    assert result.exit_code == 0
+
+    run_dir = tmp_path / "runs" / "clitest"
+    identify_dir = run_dir / "identify"
+    assert (identify_dir / "fit_results.json").exists()
+    assert (identify_dir / "identifiability.json").exists()
+    assert (identify_dir / "sensitivity.parquet").exists()
+    assert (identify_dir / "recommendations.json").exists()
+    assert (identify_dir / "revalidation.parquet").exists()
+
+    fit_results = json.loads((identify_dir / "fit_results.json").read_text())
+    assert fit_results["variant"] == "V0"
+    assert fit_results["success"] is True
+    assert set(fit_results["params"]) == {"CL0", "CLa", "CD0", "k", "thrust_lapse_n"}
+
+    identifiability = json.loads((identify_dir / "identifiability.json").read_text())
+    assert set(identifiability["ci_95"]) == set(fit_results["params"])
+    assert identifiability["condition_number"] > 0
+
+    recommendations = json.loads((identify_dir / "recommendations.json").read_text())
+    assert len(recommendations) == len(fit_results["params"])
+    for rec in recommendations:
+        assert rec["is_hypothesis"] or len(rec["evidence"]) >= 2
+
+    sensitivity = pd.read_parquet(identify_dir / "sensitivity.parquet")
+    assert set(sensitivity["parameter"]) == set(fit_results["params"])
+
+    manifest = json.loads((run_dir / "run_manifest.json").read_text())
+    assert manifest["steps"]["identify"]["status"] == "completed"
