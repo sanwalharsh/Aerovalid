@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>AeroValidate report — {{ run_id }}</title>
+  <style>
+    body { font-family: -apple-system, Helvetica, Arial, sans-serif; max-width: 1000px; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; }
+    h1, h2 { border-bottom: 1px solid #ddd; padding-bottom: 0.3rem; }
+    section { margin-bottom: 2.5rem; }
+    table { border-collapse: collapse; width: 100%; font-size: 0.85rem; margin: 0.5rem 0; }
+    th, td { border: 1px solid #ddd; padding: 0.3rem 0.5rem; text-align: right; }
+    th { background: #f5f5f5; }
+    img { max-width: 100%; margin: 0.5rem 0; }
+    .empty { color: #888; font-style: italic; }
+    .evidence { color: #888; font-size: 0.8rem; }
+    code { background: #f5f5f5; padding: 0.1rem 0.3rem; }
+  </style>
+</head>
+<body>
+  <h1>AeroValidate report — {{ run_id }}</h1>
+
+  <section>
+    <h2>Executive summary</h2>
+    {% if executive_summary %}
+      <ul>
+      {% for statement in executive_summary %}
+        <li>{{ statement.text }} <span class="evidence">[{{ statement.evidence_path }}]</span></li>
+      {% endfor %}
+      </ul>
+    {% else %}
+      <p class="empty">No data for this run.</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Data &amp; QC</h2>
+    {% if qc_table %}
+      {{ qc_table | safe }}
+    {% else %}
+      <p class="empty">No data for this run.</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Alignment</h2>
+    {% if sync_table %}
+      {{ sync_table | safe }}
+    {% else %}
+      <p class="empty">No data for this run.</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Variant comparison</h2>
+    {% if variant_comparison.ranking_figure %}
+      <img src="data:image/png;base64,{{ variant_comparison.ranking_figure }}" alt="Variant ranking">
+    {% endif %}
+    {% if variant_comparison.ranking_table %}
+      {{ variant_comparison.ranking_table | safe }}
+    {% endif %}
+    {% if variant_comparison.overlay_figure %}
+      <h3>{{ variant_comparison.overlay_signal }} overlay (flight 1)</h3>
+      <img src="data:image/png;base64,{{ variant_comparison.overlay_figure }}" alt="Overlay">
+      <h3>{{ variant_comparison.overlay_variant }} residual</h3>
+      <img src="data:image/png;base64,{{ variant_comparison.residual_figure }}" alt="Residual">
+    {% endif %}
+    {% if variant_comparison.metrics_table %}
+      {{ variant_comparison.metrics_table | safe }}
+    {% endif %}
+    {% if not variant_comparison.ranking_table and not variant_comparison.overlay_figure %}
+      <p class="empty">No data for this run.</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Condition analysis</h2>
+    {% if condition_analysis.heatmap_figure %}
+      <p>Binned by <code>{{ condition_analysis.heatmap_column }}</code>.</p>
+      <img src="data:image/png;base64,{{ condition_analysis.heatmap_figure }}" alt="Condition heatmap">
+    {% else %}
+      <p class="empty">No data for this run.</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Prediction</h2>
+    {% if prediction.cv_table %}
+      {{ prediction.cv_table | safe }}
+    {% endif %}
+    {% if prediction.intervals_table %}
+      {{ prediction.intervals_table | safe }}
+    {% endif %}
+    {% if not prediction.cv_table and not prediction.intervals_table %}
+      <p class="empty">No data for this run.</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Detection</h2>
+    {% if detection.metrics_table %}
+      {{ detection.metrics_table | safe }}
+    {% else %}
+      <p class="empty">No data for this run.</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Identification &amp; recommendations</h2>
+    {% if identification.parameter_ci_figure %}
+      <img src="data:image/png;base64,{{ identification.parameter_ci_figure }}" alt="Parameter CIs">
+    {% endif %}
+    {% if identification.recommendations %}
+      <ul>
+      {% for rec in identification.recommendations %}
+        <li>
+          <strong>{{ rec.parameter }}</strong>: {{ "%.1f"|format(rec.estimated_change_pct) }}%
+          {% if rec.is_hypothesis %}<em>(hypothesis -- insufficient evidence)</em>{% endif %}
+          {% if rec.caveats %}&mdash; {{ rec.caveats }}{% endif %}
+        </li>
+      {% endfor %}
+      </ul>
+    {% endif %}
+    {% if identification.revalidation_table %}
+      {{ identification.revalidation_table | safe }}
+    {% endif %}
+    {% if not identification.fit_results %}
+      <p class="empty">No data for this run.</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Appendix</h2>
+    <h3>Manifest</h3>
+    {% if manifest %}
+      <p>Config hash: <code>{{ manifest.config_hash }}</code> &middot; git SHA: <code>{{ manifest.git_sha }}</code></p>
+      <ul>
+      {% for step_name, step in manifest.steps.items() %}
+        <li>{{ step_name }}: {{ step.status }}</li>
+      {% endfor %}
+      </ul>
+    {% else %}
+      <p class="empty">No manifest found.</p>
+    {% endif %}
+    <h3>Methods</h3>
+    <p>See <code>docs/05_analysis_methods.md</code> for the full methodology.</p>
+  </section>
+</body>
+</html>

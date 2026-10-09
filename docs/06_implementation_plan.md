@@ -56,10 +56,10 @@ DoD: calibrated FA within ±25% of target on synthetic fixtures (`test_detect_ca
 - [x] Recommendation engine + re-validation; `fsa identify` (reduced scope -- see DECISIONS.md ADR-019).
 DoD: non-identifiable case flagged (`test_identify_jacobian.py`'s collinear-parameter test); every recommendation has ≥ 2 evidence types or is labelled hypothesis (`test_identify_recommendations.py`); a controlled self-consistency test recovers an injected CD0 error and shows refit RMSE improvement (`test_identify_fit.py`, `test_identify_revalidate.py` -- S7/S8's intent on synthetic data with known ground truth). Full S7/S8 benchmark validation against the real simulator deferred to Phase 8/9's `fsa benchmark` (ADR-015/018/019 precedent). (FR-IDN-001…006; FR-IDN-007/008 "S"-priority surrogate/structural-term probes deferred)
 
-## Phase 8 — Reporting & dashboard  `[ ]`
-- [ ] Figure library (FR-RPT-002), Jinja2 report, summary.json, tables export, executive-summary generator (numbers-only), Streamlit dashboard, optional PDF.
-- [ ] `fsa report`, `fsa dashboard`, `fsa run-all`, `fsa benchmark`.
-DoD: demo report has all sections populated, zero template placeholders; dashboard loads demo run; `fsa benchmark` writes pass/fail for S1–S9. (FR-RPT-001…006, FR-OPS-002, 004)
+## Phase 8 — Reporting & dashboard  `[x]`
+- [x] Figure library (FR-RPT-002, 12 functions), Jinja2 report, summary.json, tables export (CSV+MD), executive-summary generator (numbers-only, evidence-linked). Streamlit dashboard. PDF export deferred (`weasyprint` not installed -- ADR-021).
+- [x] `fsa report`, `fsa dashboard`, `fsa run-all`, `fsa benchmark` (reduced scope -- see DECISIONS.md ADR-021).
+DoD: demo report has all sections populated (`test_builder.py`'s full-fixture test shows zero "no data" placeholders in the populated sections; the empty-fixture test confirms graceful degradation instead of a crash); dashboard loads a demo run without error (`streamlit.testing.v1.AppTest`, `test_dashboard.py`); `fsa benchmark` writes a pass/fail/not-evaluated verdict for every S1-S9 criterion, never a fabricated one for S3/S9. Found and fixed a real bug: calling a Typer command function directly leaves omitted parameters defaulting to `typer.models.OptionInfo` sentinels, not their CLI defaults (ADR-021). (FR-RPT-001…004, 006, FR-OPS-002, 004; FR-RPT-005 PDF export deferred)
 
 ## Phase 9 — Hardening & release  `[ ]`
 - [ ] Coverage ≥ 85%, mypy strict clean, docs complete (README quick-start, CONFIG_REFERENCE, METHODS, USER_GUIDE for real-data mapping), Dockerfile, performance profiling vs NFR targets, example real-data mapping, tag v1.0.0.

@@ -394,3 +394,70 @@ diagnostic doing its job (flagging an unreliable fit), not a remaining bug, and 
 evidence types agree (FR-IDN-005). The CLI integration test asserts artifact structure
 and that the identifiability/recommendation machinery runs correctly, not that this
 small fixture's fit happens to generalize well.
+
+## ADR-020: `tabulate` is a main dependency, added for Markdown table export
+
+**Context:** FR-RPT-003 asks for every report table exported as both CSV and
+Markdown. `pandas.DataFrame.to_markdown()` is pandas' own documented way to do this,
+but it's a thin wrapper that raises `ImportError` without the optional `tabulate`
+package installed -- confirmed missing from this environment before Phase 8.
+**Decision:** add `tabulate` as a main dependency (not dev), following ADR-013's
+precedent for `scikit-posthocs`: it's needed by `report/tables.py`, which is part of
+`src/`, not just tests.
+**Consequences:** none beyond the new dependency; `tabulate` is small, pure-Python,
+and has no transitive dependencies of its own worth noting.
+
+## ADR-021: Phase 8 CLI scope -- report wiring, dashboard testing, and `fsa benchmark`
+
+**Context:** FR-RPT-001...006 and FR-OPS-002/004 together ask for a 12-figure library,
+a 9-section HTML report, a Streamlit dashboard with 5 feature areas, and a benchmark
+command reporting pass/fail on all nine vision-doc success criteria (S1-S9). Following
+ADR-015/017/018/019's precedent, each piece is implemented and tested at the library
+level; the CLI wires in a representative, tractable subset.
+**Decisions:**
+- **Report builder** (`report/builder.py`) wires in 6 of the 12 `report/figures.py`
+  functions -- ranking forest, overlay + residual time series, condition heatmap, and
+  parameter CI -- the ones a typical run's artifacts directly support. Bland-Altman,
+  Q-Q, error-vs-horizon, calibration, ROC/PR, and the 3-D trajectory plot are fully
+  implemented and independently smoke-tested (`test_figures.py`) but not called by the
+  builder; each is a one-line call away for a notebook or a future report extension.
+  A section with no artifacts for this run renders "No data for this run" rather than
+  failing, since not every run exercises every phase.
+- **PDF export** (FR-RPT-005, "S"-priority) is not implemented: `weasyprint` isn't
+  installed and adding it (plus its system font/Cairo dependencies) for an optional
+  extra was judged not worth it this phase.
+- **Dashboard** (`app/main.py`) is smoke-tested with `streamlit.testing.v1.AppTest`
+  (confirmed available in this environment), which runs the app's actual script and
+  asserts it doesn't raise -- not a full interaction test of every widget, but real
+  evidence the app loads against real run artifacts, not just an import check.
+- **`fsa benchmark`** checks S1 (determinism) once via two independent `generate`
+  calls with the same seed; S2, S4-S8 are computed per seed from a small
+  (`_BENCHMARK_N_FLIGHTS`-flight) full-pipeline run and aggregated as a median across
+  seeds, reusing `fsa generate/preprocess/validate/predict/detect/identify` directly
+  (calling their functions in-process, not via subprocess) rather than duplicating
+  pipeline logic. S4/S5 read straight from `fsa predict`'s own `cv_results.parquet`/
+  `intervals.parquet` (the hybrid-task row's `rmse_reduction_vs_sim_only_pct` and
+  `coverage` columns, added to those artifacts in this same phase for exactly this
+  purpose). S7 compares `fsa identify`'s fitted value against the *actual* injected
+  truth perturbation (`raw/meta/truth_params.json`), not a separate clean self-test --
+  an honest, possibly-imperfect number given `fsa identify`'s own reduced scope
+  (ADR-019). S3 (needs a per-variant flaw-to-regime mapping this reduced check
+  doesn't build) and S9 (a codebase property -- coverage/mypy/CI -- not a simulation
+  output) are reported as `"not evaluated"` with a note, never a fabricated pass/fail.
+**A real bug found along the way:** calling a Typer command function directly
+(bypassing the CLI) leaves every omitted parameter defaulting to its raw
+`typer.models.OptionInfo` sentinel object, not the value that option's own default
+resolves to at the CLI layer -- `generate`'s `seed`/`set_` parameters hit exactly this
+when `run_all` first called it without naming every parameter (`list(set_)` raised
+`TypeError: 'OptionInfo' object is not iterable`). Fixed by having every in-process
+call to a Typer command (`run_all`, `_benchmark_run_seed`, `_benchmark_s1`) name every
+one of that command's parameters explicitly, never relying on its "default."
+`run_all` also gained `--seed`/`--set` passthrough to `generate` (previously missing),
+both to fix this and because a real user needs some way to run `fsa run-all` at
+less-than-full scale.
+**Consequences:** `fsa benchmark` across several seeds and six variants is
+multi-minute, not instant -- expected for a benchmark command (unlike every other
+`fsa` step), and its CLI test uses one seed and a short scenario accordingly. Full
+S1-S9 validation at production scale (the config's real `n_flights`/`sobol.n`/full
+seed list) remains something a user runs deliberately, not something any automated
+test invokes at that scale.

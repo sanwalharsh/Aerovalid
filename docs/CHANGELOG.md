@@ -283,3 +283,45 @@ labelled `hypothesis` (`test_identify_recommendations.py`); `fsa generate -> ide
 verified end-to-end (`@pytest.mark.slow` CLI test). Full S7/S8 benchmark validation
 against the real simulator deferred to Phase 8/9's `fsa benchmark` (ADR-015/018/019
 precedent). `make lint test` green.
+
+## Phase 8 — Reporting & Dashboard
+
+- Added `report/figures.py` (12 functions, one per FR-RPT-002 figure type: overlay,
+  residual-with-tolerance, error-vs-horizon, condition heatmap, Bland-Altman, Q-Q,
+  ranking forest plot, calibration/reliability curve, ROC/PR, detection timeline,
+  parameter CI, 3-D trajectory with error colouring), `report/tables.py` (CSV + MD
+  export), `report/summary.py` (`summary.json` plus an auto-generated executive
+  summary where every sentence carries a computed number and an evidence-artifact
+  path -- never a hard-coded claim), and `report/builder.py` (assembles whichever
+  phase artifacts exist into the 9-section Jinja2 HTML report -- Executive summary,
+  Data & QC, Alignment, Variant comparison, Condition analysis, Prediction,
+  Detection, Identification & recommendations, Appendix -- degrading to "no data for
+  this run" per section rather than failing when a phase wasn't run).
+- Added `app/main.py`: a Streamlit dashboard (run picker, flight/variant selector,
+  overlay + residual explorer, condition heatmaps, detector timeline, recommendation
+  list, run-to-run comparison), smoke-tested with `streamlit.testing.v1.AppTest`.
+- Implemented `fsa report`, `fsa dashboard`, `fsa run-all` (orchestrates generate ->
+  preprocess -> validate -> analyze -> predict -> detect -> identify -> report, now
+  with `--seed`/`--set` passthrough to `generate`), and `fsa benchmark` (S1
+  determinism check plus S2/S4-S8 computed per seed from a small full-pipeline run
+  and aggregated as a median; S3/S9 honestly reported as not evaluated rather than
+  fabricated). Found and fixed a real bug along the way: calling a Typer command
+  function directly (as `run_all`/`benchmark` do, in-process) leaves any omitted
+  parameter defaulting to its raw `typer.models.OptionInfo` sentinel, not that
+  option's CLI default -- `generate`'s `seed`/`set_` hit this immediately
+  (`TypeError: 'OptionInfo' object is not iterable`). Every in-process call now
+  names every parameter explicitly. Added `tabulate` as a main dependency for
+  `DataFrame.to_markdown()` (ADR-020). PDF export deferred (`weasyprint` not
+  installed, "S"-priority) -- see ADR-021 for this and the rest of Phase 8's
+  reduced CLI scope.
+
+DoD: every figure function has a smoke test (`test_figures.py`, 13 tests); table
+export round-trips through CSV and renders non-empty Markdown (`test_tables.py`);
+every executive-summary sentence contains a numeric field, checked by regex
+(`test_summary.py`'s FR-RPT-006 lint test); the report builder populates every
+section on a full-fixture run with zero "no data" placeholders and degrades
+gracefully (no crash) on an empty one (`test_builder.py`); the dashboard loads both
+with no runs and with a demo run, asserting no exception (`test_dashboard.py`);
+`fsa run-all` produces every phase's artifact end-to-end (`@pytest.mark.slow` CLI
+test); `fsa benchmark` writes a verdict (pass/fail/not-evaluated) for all of
+S1-S9 (`@pytest.mark.slow` CLI test, one seed). `make lint test` green.

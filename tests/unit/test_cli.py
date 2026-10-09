@@ -38,12 +38,6 @@ def test_help_lists_all_commands() -> None:
 
 
 @pytest.mark.req("FR-OPS-001")
-@pytest.mark.parametrize("command", ["report"])
-def test_unimplemented_commands_raise_not_implemented(command: str) -> None:
-    with pytest.raises(NotImplementedError):
-        runner.invoke(app, [command], catch_exceptions=False)
-
-
 @pytest.mark.req("FR-PRP-001")
 def test_preprocess_without_run_id_raises_config_error() -> None:
     with pytest.raises(ConfigError, match="--run-id"):
@@ -358,3 +352,133 @@ def test_identify_cli_produces_fit_identifiability_and_recommendations(
 
     manifest = json.loads((run_dir / "run_manifest.json").read_text())
     assert manifest["steps"]["identify"]["status"] == "completed"
+
+
+@pytest.mark.slow
+@pytest.mark.req("FR-RPT-001")
+def test_report_cli_builds_html_and_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config = _REPO_ROOT / "configs" / "default.yaml"
+    generate_args = [
+        "generate",
+        "--config",
+        str(config),
+        "--run-id",
+        "clitest",
+        "--set",
+        "generate.n_flights=2",
+        "--set",
+        "generate.scenarios=[doublet_series]",
+        "--set",
+        "variants=[V0, V1]",
+    ]
+    assert runner.invoke(app, generate_args, catch_exceptions=False).exit_code == 0
+
+    preprocess_args = ["preprocess", "--config", str(config), "--run-id", "clitest"]
+    assert runner.invoke(app, preprocess_args, catch_exceptions=False).exit_code == 0
+
+    validate_args = ["validate", "--config", str(config), "--run-id", "clitest"]
+    assert runner.invoke(app, validate_args, catch_exceptions=False).exit_code == 0
+
+    report_args = ["report", "--config", str(config), "--run-id", "clitest"]
+    result = runner.invoke(app, report_args, catch_exceptions=False)
+    assert result.exit_code == 0
+
+    run_dir = tmp_path / "runs" / "clitest"
+    assert (run_dir / "reports" / "report.html").exists()
+    assert (run_dir / "reports" / "summary.json").exists()
+    html = (run_dir / "reports" / "report.html").read_text()
+    assert "Executive summary" in html
+    assert "Appendix" in html
+
+    manifest = json.loads((run_dir / "run_manifest.json").read_text())
+    assert manifest["steps"]["report"]["status"] == "completed"
+
+
+@pytest.mark.slow
+@pytest.mark.req("FR-OPS-002")
+def test_run_all_cli_produces_every_phase_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config = _REPO_ROOT / "configs" / "default.yaml"
+    run_all_args = [
+        "run-all",
+        "--config",
+        str(config),
+        "--run-id",
+        "clitest",
+        "--profile",
+        "demo",
+        "--set",
+        "generate.n_flights=2",
+        "--set",
+        "generate.scenarios=[doublet_series]",
+        "--set",
+        "variants=[V0, V1]",
+    ]
+    result = runner.invoke(app, run_all_args, catch_exceptions=False)
+    assert result.exit_code == 0
+
+    run_dir = tmp_path / "runs" / "clitest"
+    for artifact in (
+        "aligned/index.json",
+        "validation/variant_ranking.parquet",
+        "predict/cv_results.parquet",
+        "detect/detection_metrics.parquet",
+        "identify/fit_results.json",
+        "reports/report.html",
+    ):
+        assert (run_dir / artifact).exists(), artifact
+
+    manifest = json.loads((run_dir / "run_manifest.json").read_text())
+    steps = (
+        "generate",
+        "preprocess",
+        "validate",
+        "analyze",
+        "predict",
+        "detect",
+        "identify",
+        "report",
+    )
+    for step in steps:
+        assert manifest["steps"][step]["status"] == "completed"
+
+
+@pytest.mark.slow
+@pytest.mark.req("FR-OPS-004")
+def test_benchmark_cli_writes_summary_with_s1_through_s9(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config = _REPO_ROOT / "configs" / "default.yaml"
+    result = runner.invoke(
+        app, ["benchmark", "--config", str(config), "--seeds", "1"], catch_exceptions=False
+    )
+    assert result.exit_code == 0
+
+    summary_path = tmp_path / "runs" / "benchmark" / "benchmark_summary.json"
+    assert summary_path.exists()
+    summary = json.loads(summary_path.read_text())
+    assert summary["seeds"] == [1]
+    assert set(summary["results"]) >= {
+        "S1",
+        "S2",
+        "S3",
+        "S4",
+        "S5",
+        "S6_delay",
+        "S6_far",
+        "S6_recall",
+        "S7",
+        "S8",
+        "S9",
+    }
+    # S1 is always actually evaluated (it only needs `generate`, never skipped).
+    assert summary["results"]["S1"]["passed"] is not None
+    # S3/S9 are explicitly out of this reduced scope -- never a fabricated pass/fail.
+    assert summary["results"]["S3"]["passed"] is None
+    assert summary["results"]["S9"]["passed"] is None
