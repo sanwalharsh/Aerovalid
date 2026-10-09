@@ -1,0 +1,5 @@
+# Drag-rise step: CD0 *= (1 + m) (sim spec §7).
+type: cd0_step
+magnitude_range: [0.10, 0.30]
+ramp_s_range: [0, 5]
+affected_signals: [vel_air_mps, alt_m, nx_g]

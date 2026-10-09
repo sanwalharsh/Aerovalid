@@ -5,6 +5,7 @@ per study (fixed across every flight) and never exposed to variants.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -114,7 +115,9 @@ class TruthModel:
         *,
         seed: int,
         wind: WindParams | None = None,
-        fault_schedule: list[tuple[float, float, FaultState]] | None = None,
+        param_fault_fn: Callable[[float], FaultState] | None = None,
+        wind_shear_fn: Callable[[float], tuple[float, float]] | None = None,
+        delta_t_k: float = 0.0,
     ) -> SimResult:
         """
         Fly `scenario` closed-loop (the controller stack drives the vehicle).
@@ -132,9 +135,16 @@ class TruthModel:
             used for the hidden-parameter draw.
         wind : WindParams, optional
             This flight's wind/turbulence condition; `None` disables wind entirely.
-        fault_schedule : list[(t_on_s, t_off_s, FaultState)], optional
-            Time-varying parameter multipliers (`telemetry/faults.py` builds this);
-            `None` means no faults this flight.
+        param_fault_fn : callable, optional
+            `t_s -> FaultState`: time-varying vehicle-parameter multipliers
+            (`telemetry/faults.py` builds this from a sampled fault schedule);
+            `None` means no parameter faults this flight.
+        wind_shear_fn : callable, optional
+            `t_s -> (delta_wind_n_mps, delta_wind_e_mps)`: an additional wind-shear
+            event on top of `wind` (`telemetry/faults.py`'s `wind_shear_event`);
+            `None` means no shear event.
+        delta_t_k : float, default 0.0
+            This flight's ISA temperature offset condition, K.
 
         Returns
         -------
@@ -180,8 +190,11 @@ class TruthModel:
                 wind_n, wind_e = float(wind_n_raw), float(wind_e_raw)
             else:
                 wind_n, wind_e = 0.0, 0.0
+            if wind_shear_fn is not None:
+                shear_n, shear_e = wind_shear_fn(t)
+                wind_n, wind_e = wind_n + shear_n, wind_e + shear_e
             gust_n, gust_e, gust_d = turbulence.step(self.dt_s, max(y[3], 1.0))
-            fault_state = _fault_state_at(t, fault_schedule)
+            fault_state = param_fault_fn(t) if param_fault_fn is not None else FaultState()
 
             inputs = StepInputs(
                 throttle=throttle,
@@ -190,6 +203,7 @@ class TruthModel:
                 wind_n_mps=wind_n + gust_n,
                 wind_e_mps=wind_e + gust_e,
                 wind_d_mps=gust_d,
+                delta_t_k=delta_t_k,
             )
             thrust_n = float(y[8])
             measurements = derived_measurements(
@@ -244,14 +258,3 @@ class TruthModel:
         trajectory = pd.DataFrame.from_records(records)
         trajectory["source"] = "truth"
         return SimResult(trajectory=trajectory, status=status, diverged_at_s=diverged_at)
-
-
-def _fault_state_at(
-    t_s: float, schedule: list[tuple[float, float, FaultState]] | None
-) -> FaultState:
-    if not schedule:
-        return FaultState()
-    for t_on, t_off, state in schedule:
-        if t_on <= t_s <= t_off:
-            return state
-    return FaultState()

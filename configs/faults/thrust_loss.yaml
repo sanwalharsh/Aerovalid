@@ -1,0 +1,5 @@
+# Thrust loss ramp: T0 *= (1 - m) (sim spec §7).
+type: thrust_loss
+magnitude_range: [0.10, 0.40]
+ramp_s_range: [10, 30]
+affected_signals: [vel_air_mps, alt_m, throttle]

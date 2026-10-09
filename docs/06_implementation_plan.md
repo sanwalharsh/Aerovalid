@@ -22,10 +22,10 @@ DoD: `pip install -e ".[dev]"` works; `fsa --help` lists commands; unit tests fo
 - [x] Simulator self-tests (sim spec §10).
 DoD: all sim-spec tests pass; every scenario × variant runs w/o NaN; V5-vs-truth RMSE bound documented; notebook `notebooks/01_sim_sanity.ipynb` plots a trajectory. (FR-COR-003, FR-SIM-001…011)
 
-## Phase 2 — Synthetic telemetry & ingestion  `[ ]`
-- [ ] `telemetry/sensors.py` (noise, bias, drift, lag, quantisation), `defects.py` (timing), `faults.py` (fault schedule into truth), `generator.py` (Sobol conditions, orchestrates flights, parallel with joblib).
-- [ ] Adapters: CSV/Parquet with mapping + unit conversion; optional ULog/DataFlash behind extra.
-- [ ] `fsa generate`, `fsa ingest` commands; artifact layout per data spec §6; schema validation.
+## Phase 2 — Synthetic telemetry & ingestion  `[x]`
+- [x] `telemetry/sensors.py` (noise, bias, drift, lag, quantisation), `defects.py` (timing), `faults.py` (fault schedule into truth), `generator.py` (Sobol conditions, orchestrates flights, parallel with joblib).
+- [x] Adapters: CSV/Parquet with mapping + unit conversion; optional ULog/DataFlash behind extra (deferred, ADR-009).
+- [x] `fsa generate`, `fsa ingest` commands; artifact layout per data spec §6; schema validation.
 DoD: `fsa generate --profile demo` produces 12 flights deterministically (hash-identical re-run); statistical sensor tests pass; fixture CSV with non-SI units ingests correctly; faults log present. (FR-TEL-001…007, FR-COR-005)
 
 ## Phase 3 — Preprocessing & alignment  `[ ]`

@@ -1,0 +1,5 @@
+# Lift-curve-slope degradation: CLa *= (1 - m) (sim spec §7).
+type: cla_degrade
+magnitude_range: [0.05, 0.20]
+ramp_s_range: [0, 10]
+affected_signals: [nz_g, alt_m, pitch_rad]

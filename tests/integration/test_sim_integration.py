@@ -98,7 +98,7 @@ def test_v5_vs_truth_altitude_rmse_is_small_over_trim_flight(test_vehicle: Vehic
     # Bound is the registered alt_m engineering tolerance (core/signals.py), not the
     # spec's nominal "< 1 m" target: V5 replays truth's controls open-loop (no
     # re-trimming), so its drift scales with the random +-2% parameter noise draw and
-    # is not expected to be seed-independent. See DECISIONS.md ADR-008 for the
+    # is not expected to be seed-independent. See DECISIONS.md ADR-007 for the
     # measured value at this seed and why < 1 m is not asserted directly.
     tolerance_m = 5.0
     message = f"V5-vs-truth altitude RMSE {rmse_m:.4f} m exceeds the {tolerance_m} m tolerance"

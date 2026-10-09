@@ -1,0 +1,6 @@
+# Additive bias step on one telemetry sensor = k * sigma (sim spec §7). Magnitude is
+# in units of that signal's registered sensor sigma, not a physical unit.
+type: sensor_bias_step
+magnitude_range: [3, 10]
+ramp_s_range: [0, 0]
+affected_signals: [alt_m]

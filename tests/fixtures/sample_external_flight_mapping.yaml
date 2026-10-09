@@ -1,0 +1,14 @@
+# Example column mapping for a non-SI-units external CSV (FR-TEL-005 fixture test).
+time_column: time_ms
+time_unit: ms
+flight_id: F_EXTERNAL_0001
+source: tel
+columns:
+  alt_m: altitude_ft
+  vel_air_mps: airspeed_kts
+  pitch_rad: pitch_deg
+  roll_rad: roll_deg
+angle_columns_in_degrees: [pitch_rad, roll_rad]
+unit_conversions:
+  alt_m: 0.3048
+  vel_air_mps: 0.5144444

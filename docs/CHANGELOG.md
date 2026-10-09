@@ -50,8 +50,45 @@ non-obvious calls made while resolving ambiguity.
   turn radius/load factor (0.5%), energy balance, controllers, manoeuvre primitives, truth
   determinism, variant overrides, windowed re-init. Integration (`@pytest.mark.slow`): every
   scenario x every variant (V0-V5) runs to completion with no NaN/inf; V5-vs-truth open-loop
-  altitude RMSE measured at 2.17 m over a 5-minute trim flight (see DECISIONS.md ADR-008 for
+  altitude RMSE measured at 2.17 m over a 5-minute trim flight (see DECISIONS.md ADR-007 for
   why the test asserts the 5 m registry tolerance rather than the spec's nominal "< 1 m").
 
 DoD: all sim-spec §10 tests pass; every scenario x variant runs without NaN; V5-vs-truth RMSE
 documented; `notebooks/01_sim_sanity.ipynb` plots a trajectory.
+
+## Phase 2 — Synthetic Telemetry & Ingestion
+
+- Added `telemetry/sensors.py` (per-signal `SensorModel`: white noise, bias, random-walk
+  drift/gyro drift, scale, first-order lag via `scipy.signal.lfilter`, quantisation,
+  dropout; `apply_sensors` corrupts a whole truth DataFrame into telemetry).
+- Added `telemetry/defects.py` (`TimingDefectParams`/`apply_timing_defects`: constant clock
+  offset, linear drift, jitter, duplicate timestamps -- collapsed onto their nearest
+  preceding non-duplicate sample, not a naive shift -- dropouts, burst gaps).
+- Added `telemetry/faults.py` (all 7 fault types from sim spec §7; `sample_fault_schedule`
+  draws at most one fault per flight; `build_param_fault_fn`/`build_wind_shear_fn` produce
+  the `t_s -> FaultState` / wind-shear closures `sim/truth.py` now accepts natively;
+  `apply_sensor_bias_faults` for the sensor-level fault type).
+- Added `telemetry/generator.py` (`sample_conditions`: Sobol, balance-preserving
+  `random_base2` + truncate; `generate_flight`/`generate_all_flights`: full per-flight
+  pipeline -- truth, decimation to telemetry rate, sensor+timing defects, every variant
+  replayed from post-defect telemetry controls, V5's wind estimated from the same flight's
+  telemetry).
+- Added `telemetry/adapters/base.py` (`ColumnMapping`, `Adapter` protocol) and
+  `adapters/csv_parquet.py` (unit/time-base conversion into the canonical schema).
+- Implemented `fsa generate` (writes `runs/<run_id>/raw/{truth,telemetry,variants/<v>,
+  meta}/...` per data spec §6, idempotent on matching config hash, manifest-tracked) and
+  `fsa ingest` (adapter + mapping YAML -> `runs/<run_id>/ingested/`).
+- Added `configs/sensors/default.yaml`, `configs/faults/*.yaml` (7 files), a fixture CSV +
+  mapping YAML for the non-SI-units adapter test.
+- `sim/truth.py` and `sim/dynamics.py` extended (`delta_t_k`, `param_fault_fn`,
+  `wind_shear_fn`) to receive this phase's time-varying fault effects without `sim/`
+  knowing anything about `telemetry/`'s fault schedule representation.
+- Manually verified `fsa generate` end to end: two independent runs with the same config
+  produce byte-identical Parquet/JSON artifacts (`shasum` diff clean); idempotent re-run
+  with the same `--run-id` and no `--force` skips correctly.
+
+DoD: `fsa generate` produces exactly N flights deterministically (hash-identical re-run,
+verified manually at small scale and by an automated `@pytest.mark.slow` CLI test);
+sensor noise/bias recovery within 5%; fixture CSV with non-SI units ingests to SI schema
+correctly; per-flight fault log (`meta/<flight>.json` + aggregate `faults.json`) present.
+ULog/DataFlash adapter (FR-TEL-006, priority S) deferred -- see DECISIONS.md ADR-009.

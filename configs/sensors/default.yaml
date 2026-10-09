@@ -1,0 +1,22 @@
+# Default sensor noise/bias/lag/dropout parameters (sim spec §6, build prompt §7).
+# Every entry maps to a canonical signal name in core/signals.py.
+alt_m: {sigma: 1.5, bias_rw: 0.02, lag_s: 0.20}
+x_m: {sigma: 1.2, bias: 0.0, dropout_p: 0.005}
+y_m: {sigma: 1.2, bias: 0.0, dropout_p: 0.005}
+vel_air_mps: {sigma: 0.40, scale: 1.005, quantise: 0.05}
+vel_gnd_mps: {sigma: 0.15, bias: 0.0}
+roll_rad: {sigma_deg: 0.4, bias_deg: 0.0}
+pitch_rad: {sigma_deg: 0.4, bias_deg: 0.0}
+yaw_rad: {sigma_deg: 1.0, drift_deg_per_sqrts: 0.05}
+nx_g: {sigma: 0.02, bias: 0.005}
+nz_g: {sigma: 0.02, bias: 0.005}
+alpha_rad: {sigma_deg: 0.3, bias_deg: 0.2, enabled: false}
+
+timing_defects:
+  offset_s: {low: -0.8, high: 0.8}
+  drift_ppm: {low: -50, high: 50}
+  jitter_sigma_ms: 5.0
+  dropout_p_per_sample: 0.005
+  duplicate_p_per_sample: 0.002
+  burst_gaps_max_n: 2
+  burst_gaps_duration_s: [0.5, 3.0]

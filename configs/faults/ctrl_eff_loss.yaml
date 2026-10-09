@@ -1,0 +1,5 @@
+# Control-effectiveness loss: alpha response gain *= (1 - m) (sim spec §7).
+type: ctrl_eff_loss
+magnitude_range: [0.2, 0.5]
+ramp_s_range: [0, 1]
+affected_signals: [pitch_rad, alt_m]

@@ -1,0 +1,5 @@
+# Icing: CD0 up, CLmax down, CLa down (sim spec §7).
+type: icing
+magnitude_range: [0.1, 0.3]
+ramp_s_range: [30, 90]
+affected_signals: [vel_air_mps, alt_m, nz_g]

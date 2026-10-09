@@ -91,7 +91,7 @@ renaming the attribute and aliasing it.
 field with non-snake-case casing should follow the same pattern (exact name + scoped
 `noqa` + a one-line comment), not a project-wide rule exemption.
 
-## ADR-008: V5-vs-truth RMSE test asserts the alt_m engineering tolerance, not "< 1 m"
+## ADR-007: V5-vs-truth RMSE test asserts the alt_m engineering tolerance, not "< 1 m"
 
 **Context:** sim spec §10 says "V5 vs truth with no sensor noise: altitude RMSE < 1 m
 over a 5-minute trim flight (document the actual value)." V5 replays truth's own
@@ -112,7 +112,7 @@ bug: Phase 3's windowed re-initialisation (`run_windowed`, short horizons) is th
 mechanism that actually keeps this bounded in the full pipeline, and is where a tight
 "< 1 m"-style bound belongs once Phase 3 lands.
 
-## ADR-007: `ruff` is excluded from `*.md` files entirely
+## ADR-008: `ruff` is excluded from `*.md` files entirely
 
 **Context:** running `ruff format .` reformatted the fenced Python snippets inside
 `PROMPT_FOR_CLAUDE_CODE.md` (ruff 0.16 formats embedded code blocks in Markdown by
@@ -126,3 +126,37 @@ need for that -- only `.py` sources are meant to be linted). If a project doc ev
 embedded-code-block linting, that should be a separate, explicitly-scoped ruff
 invocation that excludes the frozen spec files by name, not a blanket re-inclusion of
 `*.md`.
+
+## ADR-009: ULog/DataFlash adapter (FR-TEL-006) deferred
+
+**Context:** FR-TEL-006 ("ULog (PX4) and ArduPilot DataFlash adapters") is priority
+**S** (should), explicitly gated behind the optional `[adapters]` extra
+(`pymavlink`/`pyulog`), and nothing through Phase 8 of the implementation plan actually
+*depends* on it -- the demo pipeline is fully synthetic (`fsa generate`), and the only
+real-data touchpoint before Phase 9 is the CSV/Parquet adapter (FR-TEL-005, implemented).
+**Decision:** skip `telemetry/adapters/ulog.py` in Phase 2 rather than land an
+untested stub module (CLAUDE.md §2: "no dead code... every function must be called by
+at least one test"). It will be implemented when a phase actually exercises it (most
+likely Phase 9's real-data dry-run, FR-TEL-006's natural consumer) or on explicit request.
+**Consequences:** the `[adapters]` extra currently has no code using it; `pyproject.toml`
+keeps the extra declared (`pymavlink`, `pyulog`) since the dependency choice itself
+isn't in question, only the adapter module's implementation timing.
+
+## ADR-010: V5's replay init state uses truth's first sample, not telemetry's
+
+**Context:** sim spec §9 step 5 says variants replay "with the initial state from
+first telemetry samples (smoothed)". The "smoothed" state estimator is FR-PRP-011,
+a Phase 3 deliverable that doesn't exist yet; telemetry's own first sample can also be
+`NaN` in specific state columns (small per-signal dropout probability), which would
+break replay's initial condition.
+**Decision:** `telemetry/generator.py::generate_flight` initialises every variant
+replay (including V5) from `truth_df.iloc[0]` -- the clean, noiseless first sample --
+rather than `telemetry_df.iloc[0]`. The controls fed to replay still come from
+telemetry (post sensor-corruption and timing-defects), matching the spec's "recorded
+controls (from telemetry controls, i.e., after defects)" exactly; only the *initial
+condition* is simplified.
+**Consequences:** validation metrics computed on the very first few samples of a
+replay will be slightly optimistic until Phase 3 lands a real state estimator and
+`generate_flight` is updated to use it; this does not affect windowed re-initialisation
+(`run_windowed`), which is unaffected by this flight-level choice and already accepts
+an externally supplied init state per window.

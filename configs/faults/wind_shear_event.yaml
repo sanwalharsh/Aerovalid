@@ -1,0 +1,5 @@
+# Wind step/gust event: a sudden wind speed change over a short ramp (sim spec §7).
+type: wind_shear_event
+magnitude_range: [5, 15]
+ramp_s_range: [2, 5]
+affected_signals: [vel_gnd_mps, chi_rad]
