@@ -58,7 +58,9 @@ target-version = "py311"
 # Markdown is out of scope: CLAUDE.md, PROMPT_FOR_CLAUDE_CODE.md, and docs/*.md are the
 # frozen spec (several are explicitly "do not edit"), and ruff's formatter reformats
 # fenced Python snippets inside them by default -- see docs/DECISIONS.md ADR-007.
-extend-exclude = ["*.md"]
+# notebooks/ is exploratory only and never imported by src (CLAUDE.md §4); it is not
+# held to the same lint/format bar as the package.
+extend-exclude = ["*.md", "notebooks/"]
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "I", "N", "UP", "ANN", "B", "SIM", "PIE", "C90"]
@@ -71,7 +73,7 @@ warn_unused_ignores = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["ruptures.*", "SALib.*", "pandera.*", "joblib.*", "pyulog.*", "pymavlink.*"]
+module = ["ruptures.*", "SALib.*", "pandera.*", "joblib.*", "pyulog.*", "pymavlink.*", "scipy.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

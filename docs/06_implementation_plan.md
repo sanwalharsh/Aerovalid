@@ -13,13 +13,13 @@ Tasks
 - [x] `docs/DECISIONS.md`, `docs/CHANGELOG.md`, `docs/CONFIG_REFERENCE.md` generator script.
 DoD: `pip install -e ".[dev]"` works; `fsa --help` lists commands; unit tests for config/manifest/RNG/angles pass; CI green. (FR-COR-001,002,004,006,007; FR-OPS-001 partial, 003, 005)
 
-## Phase 1 — Physics & simulation  `[ ]`
-- [ ] `core/atmosphere.py` (ISA, ΔT offset) + tests.
-- [ ] `sim/aero.py`, `sim/propulsion.py`, `sim/environment.py` (wind, shear, Dryden), `sim/integrators.py` (RK4, adaptive wrapper).
-- [ ] `sim/dynamics.py` (state derivative, derived measurements nx/nz/attitude).
-- [ ] `sim/controllers.py` + `sim/maneuvers.py` + scenario YAML loader.
-- [ ] `sim/truth.py` (α-dynamics, actuator lag, hidden perturbations) and `sim/variants.py` (V0–V6 from YAML), replay & windowed runners.
-- [ ] Simulator self-tests (sim spec §10).
+## Phase 1 — Physics & simulation  `[x]`
+- [x] `core/atmosphere.py` (ISA, ΔT offset) + tests.
+- [x] `sim/aero.py`, `sim/propulsion.py`, `sim/environment.py` (wind, shear, Dryden), `sim/integrators.py` (RK4, adaptive wrapper).
+- [x] `sim/dynamics.py` (state derivative, derived measurements nx/nz/attitude).
+- [x] `sim/controllers.py` + `sim/maneuvers.py` + scenario YAML loader.
+- [x] `sim/truth.py` (α-dynamics, actuator lag, hidden perturbations) and `sim/variants.py` (V0–V5 from YAML), replay & windowed runners.
+- [x] Simulator self-tests (sim spec §10).
 DoD: all sim-spec tests pass; every scenario × variant runs w/o NaN; V5-vs-truth RMSE bound documented; notebook `notebooks/01_sim_sanity.ipynb` plots a trajectory. (FR-COR-003, FR-SIM-001…011)
 
 ## Phase 2 — Synthetic telemetry & ingestion  `[ ]`

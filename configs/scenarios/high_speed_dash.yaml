@@ -1,0 +1,6 @@
+# ~6 min: accelerate hard at low altitude to stress the compressibility/wave-drag
+# region (M ~ 0.28-0.35) that distinguishes V4 from the other variants (sim spec §8).
+segments:
+  - {type: trim_cruise, v_mps: 30, h_m: 800, duration_s: 30}
+  - {type: speed_step, delta_v_mps: 55, duration_s: 200}
+  - {type: trim_cruise, duration_s: 130}

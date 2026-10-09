@@ -1,0 +1,14 @@
+# Ground-truth variant fidelity ordering and regime-flaw tags, used only by
+# `fsa benchmark` to score S2 (ranking) and S3 (regime-flaw localisation). Never read
+# by validate/predict/detect/identify -- those must recover this independently from
+# data, not be told the answer (build prompt §5).
+fidelity_order_error_ascending: [V5, V4, V0, V2, V1, V3]
+ties: [[V0, V2]]  # condition-dependent: V2 only worse than V0 at high load factor
+
+regime_flaws:
+  V0: {regime: "mach > 0.5", description: "drag underestimate (no wave drag)"}
+  V1: {regime: "all", description: "CD0 20% high everywhere"}
+  V2: {regime: "nz_g > 1.8", description: "lift underestimate at high load factor"}
+  V3: {regime: "large altitude change", description: "density and thrust lapse both wrong"}
+  V4: {regime: "none", description: "no known flaw below M=0.15; wind-blind"}
+  V5: {regime: "none", description: "near-truth; should rank first"}

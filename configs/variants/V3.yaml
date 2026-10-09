@@ -1,0 +1,15 @@
+# Atmosphere-naive: V0 but constant rho = rho(h0); no thrust lapse with altitude.
+# Fails at large altitude change (sim spec §5). Fidelity rank: 6 (worst).
+name: V3
+description: atmosphere_naive
+known_flaw: "Fails at large altitude change -- density and thrust both wrong"
+overrides: {}
+switches:
+  compressibility: false
+  wind_rate_terms: false
+  alpha_dynamics: false
+  thrust_lapse: false
+  isa_offset_known: false
+  wave_drag: false
+atmosphere_naive: true
+dt_s: 0.05

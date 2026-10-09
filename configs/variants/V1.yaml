@@ -1,0 +1,15 @@
+# High-drag: V0 with CD0 +20%. Worst overall error (sim spec §5). Fidelity rank: 5.
+name: V1
+description: high_drag
+known_flaw: "CD0 20% high -- worst overall error"
+overrides:
+  CD0_mult: 1.20
+switches:
+  compressibility: false
+  wind_rate_terms: false
+  alpha_dynamics: false
+  thrust_lapse: true
+  isa_offset_known: false
+  wave_drag: false
+atmosphere_naive: false
+dt_s: 0.05

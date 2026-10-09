@@ -1,0 +1,11 @@
+# ~5 min: 3 pitch doublets at different V/h (sim spec §8).
+segments:
+  - {type: trim_cruise, v_mps: 28, h_m: 1500, duration_s: 30}
+  - {type: pitch_doublet, alpha_amp_rad: 0.04, period_s: 4, duration_s: 4}
+  - {type: trim_cruise, duration_s: 50}
+  - {type: speed_step, delta_v_mps: 5, duration_s: 40}
+  - {type: pitch_doublet, alpha_amp_rad: 0.05, period_s: 5, duration_s: 5}
+  - {type: trim_cruise, duration_s: 50}
+  - {type: climb, h_target_m: 2200, v_mps: 30, duration_s: 60}
+  - {type: pitch_doublet, alpha_amp_rad: 0.06, period_s: 6, duration_s: 6}
+  - {type: trim_cruise, duration_s: 55}

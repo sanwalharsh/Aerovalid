@@ -1,0 +1,17 @@
+# Near-truth: documentation only. V5's parameters are NOT loaded from this file --
+# they are computed at runtime from the study's (hidden) truth parameters times an
+# additional +-2% noise (sim spec §5), via `sim.variants.make_variant_v5`, because
+# truth's perturbed parameters are drawn per study and must never be read from a
+# static config. This file records the intended switches for reference only.
+name: V5
+description: near_truth
+known_flaw: "None -- should rank first"
+switches:
+  compressibility: true
+  wind_rate_terms: true   # wind estimated from airspeed - ground speed
+  alpha_dynamics: false   # truth structure minus alpha dynamics
+  thrust_lapse: true
+  isa_offset_known: true
+  wave_drag: true
+atmosphere_naive: false
+dt_s: 0.05

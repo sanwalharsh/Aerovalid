@@ -1,0 +1,5 @@
+# ~8 min: climb at 2 gamma values then long cruise (sim spec §8).
+segments:
+  - {type: climb, h_target_m: 1500, v_mps: 28, duration_s: 90}
+  - {type: climb, h_target_m: 3000, v_mps: 30, duration_s: 120}
+  - {type: trim_cruise, v_mps: 32, duration_s: 270}

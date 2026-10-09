@@ -1,0 +1,15 @@
+# Compressibility-aware: V0 + Prandtl-Glauert correction + wave drag; still no wind
+# (sim spec §5). No known flaw below M=0.15; wind-blind. Fidelity rank: 2.
+name: V4
+description: compressibility_aware
+known_flaw: "None below M=0.15; wind-blind"
+overrides: {}
+switches:
+  compressibility: true
+  wind_rate_terms: false
+  alpha_dynamics: false
+  thrust_lapse: true
+  isa_offset_known: false
+  wave_drag: true
+atmosphere_naive: false
+dt_s: 0.05

@@ -1,0 +1,11 @@
+# ~15 min: climb -> cruise -> 2 turns -> descent -> speed step -> doublet (sim spec §8).
+segments:
+  - {type: climb, h_target_m: 2500, v_mps: 30, duration_s: 120}
+  - {type: trim_cruise, v_mps: 32, duration_s: 180}
+  - {type: coordinated_turn, bank_rad: 0.5236, heading_change_rad: 3.14159, v_mps: 32}
+  - {type: trim_cruise, duration_s: 60}
+  - {type: coordinated_turn, bank_rad: 0.6, heading_change_rad: 3.14159, v_mps: 32}
+  - {type: descend, h_target_m: 1200, v_mps: 30, duration_s: 150}
+  - {type: speed_step, delta_v_mps: 8, duration_s: 60}
+  - {type: pitch_doublet, alpha_amp_rad: 0.05, period_s: 6, duration_s: 6}
+  - {type: trim_cruise, duration_s: 290}

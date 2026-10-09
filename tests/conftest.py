@@ -9,11 +9,15 @@ from pathlib import Path
 import pytest
 import yaml
 
+from aerovalid.sim.protocols import VehicleParams
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
 
 @pytest.fixture
 def default_config_path() -> Path:
     """Path to the repo's real `configs/default.yaml` (read-only)."""
-    return Path(__file__).resolve().parents[1] / "configs" / "default.yaml"
+    return _REPO_ROOT / "configs" / "default.yaml"
 
 
 @pytest.fixture
@@ -22,3 +26,52 @@ def minimal_config_path(tmp_path: Path) -> Path:
     path = tmp_path / "minimal.yaml"
     path.write_text(yaml.safe_dump({"study": {"name": "unit-test", "seed": 7}}))
     return path
+
+
+@pytest.fixture
+def vehicles_dir() -> Path:
+    """Path to the repo's real `configs/vehicles/` (read-only)."""
+    return _REPO_ROOT / "configs" / "vehicles"
+
+
+@pytest.fixture
+def variants_dir() -> Path:
+    """Path to the repo's real `configs/variants/` (read-only)."""
+    return _REPO_ROOT / "configs" / "variants"
+
+
+@pytest.fixture
+def scenarios_dir() -> Path:
+    """Path to the repo's real `configs/scenarios/` (read-only)."""
+    return _REPO_ROOT / "configs" / "scenarios"
+
+
+@pytest.fixture
+def test_vehicle() -> VehicleParams:
+    """A `VehicleParams` matching `configs/vehicles/generic_uav_v1.yaml`, built in
+    code so sim unit tests don't depend on YAML parsing."""
+    return VehicleParams(
+        name="generic_uav_v1",
+        mass_nom_kg=25.0,
+        mass_range_kg=(22.0, 28.0),
+        wing_area_m2=1.2,
+        wingspan_m=3.2,
+        aspect_ratio=8.533,
+        oswald_e=0.80,
+        k=0.04696,
+        CL0=0.25,
+        CLa=5.0,
+        alpha_stall_rad=0.2618,
+        CLmax=1.45,
+        CD0=0.028,
+        Mdd=0.60,
+        wave_drag_coeff=20.0,
+        T0_N=180.0,
+        thrust_lapse_n=0.85,
+        thrust_mach_factor=0.25,
+        SFC_kg_per_Ns=1.5e-5,
+        nz_max_g=3.5,
+        bank_limit_rad=1.0472,
+        tau_thrust_s=0.4,
+        tau_alpha_s=0.15,
+    )

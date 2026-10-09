@@ -1,0 +1,17 @@
+# Lift-curve error: V0 with CLa -12%, CL0 -10%. Bad at high load factor nz>1.8
+# (sim spec §5). Fidelity rank: 4-5, condition-dependent.
+name: V2
+description: lift_curve_error
+known_flaw: "Lift underestimate at high load factor (nz_g > 1.8)"
+overrides:
+  CLa_mult: 0.88
+  CL0_mult: 0.90
+switches:
+  compressibility: false
+  wind_rate_terms: false
+  alpha_dynamics: false
+  thrust_lapse: true
+  isa_offset_known: false
+  wave_drag: false
+atmosphere_naive: false
+dt_s: 0.05

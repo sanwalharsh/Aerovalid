@@ -1,0 +1,15 @@
+# Nominal baseline: vehicle nominal parameters; no compressibility; no wave drag;
+# quasi-steady alpha; ISA, no wind (sim spec §5). Expected fidelity rank: 4.
+name: V0
+description: nominal_baseline
+known_flaw: "CD0 underestimate above M=0.20 (no wave drag)"
+overrides: {}
+switches:
+  compressibility: false
+  wind_rate_terms: false
+  alpha_dynamics: false
+  thrust_lapse: true
+  isa_offset_known: false
+  wave_drag: false
+atmosphere_naive: false
+dt_s: 0.05
