@@ -340,16 +340,177 @@ def preprocess(config: Path = _CONFIG_OPTION, run_id: str | None = _RUN_ID_OPTIO
     logger.info("preprocess: processed %d flights in %s", len(flight_paths), run_dir)
 
 
+def _resolve_tolerances(configured: dict[str, float], signals: list[str]) -> dict[str, float]:
+    """Fill in any signal missing from `configured` with its registry default tolerance."""
+    from aerovalid.core.signals import get_signal
+
+    resolved = dict(configured)
+    for name in signals:
+        if name not in resolved:
+            tol = get_signal(name).default_tolerance
+            if tol is not None:
+                resolved[name] = tol
+    return resolved
+
+
+def _load_aligned_index(run_dir: Path) -> dict[str, list[str]]:
+    index_path = run_dir / "aligned" / "index.json"
+    if not index_path.exists():
+        raise ConfigError(f"No aligned/ artifacts found at {run_dir}; run `fsa preprocess` first.")
+    index: dict[str, list[str]] = json.loads(index_path.read_text())
+    return index
+
+
+def _load_variant_aligned(run_dir: Path, variant: str, flights: list[str]) -> pd.DataFrame:
+    frames = [
+        pd.read_parquet(run_dir / "aligned" / variant / f"{flight_id}.parquet")
+        for flight_id in flights
+        if (run_dir / "aligned" / variant / f"{flight_id}.parquet").exists()
+    ]
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
 @app.command()
 def validate(config: Path = _CONFIG_OPTION, run_id: str | None = _RUN_ID_OPTION) -> None:
     """Compute per-variant error metrics and statistical comparisons (FR-VAL-001...010)."""
-    raise NotImplementedError("`fsa validate` is implemented in Phase 4.")
+    from aerovalid.validate.aggregate import compute_metrics_table
+    from aerovalid.validate.compare import compare_variant_pairs
+    from aerovalid.validate.composite import composite_score, rank_variants
+
+    if run_id is None:
+        raise ConfigError("`fsa validate` requires --run-id (an existing `fsa preprocess` run).")
+    run_dir = Path("runs") / run_id
+    setup_logging(run_id=run_id, log_file=run_dir / "log.txt")
+    study_config = load_config(config)
+    index = _load_aligned_index(run_dir)
+    tolerances = _resolve_tolerances(
+        study_config.validation.tolerances, study_config.validation.signals
+    )
+
+    started_at = datetime.now(UTC).isoformat()
+    start_time = time.monotonic()
+
+    per_signal_frames = []
+    per_phase_frames = []
+    for variant in index["variants"]:
+        variant_df = _load_variant_aligned(run_dir, variant, index["flights"])
+        if variant_df.empty:
+            continue
+        signal_table = compute_metrics_table(
+            variant_df, study_config.validation.signals, tolerances, groupby="flight_id"
+        )
+        signal_table = signal_table.rename(columns={"group": "flight_id"})
+        signal_table["variant"] = variant
+        per_signal_frames.append(signal_table)
+
+        if "phase" in variant_df.columns:
+            phase_table = compute_metrics_table(
+                variant_df, study_config.validation.signals, tolerances, groupby="phase"
+            )
+            phase_table = phase_table.rename(columns={"group": "phase"})
+            phase_table["variant"] = variant
+            per_phase_frames.append(phase_table)
+
+    metrics_signal = (
+        pd.concat(per_signal_frames, ignore_index=True) if per_signal_frames else pd.DataFrame()
+    )
+    metrics_phase = (
+        pd.concat(per_phase_frames, ignore_index=True) if per_phase_frames else pd.DataFrame()
+    )
+
+    validation_dir = run_dir / "validation"
+    validation_dir.mkdir(parents=True, exist_ok=True)
+    output_hashes: dict[str, str] = {}
+
+    def _write(df: pd.DataFrame, name: str) -> None:
+        path = validation_dir / name
+        df.to_parquet(path, index=False)
+        output_hashes[str(path.relative_to(run_dir))] = hash_file(path)
+
+    _write(metrics_signal, "metrics_signal.parquet")
+    _write(metrics_phase, "metrics_phase.parquet")
+
+    if len(index["variants"]) >= 2 and not metrics_signal.empty:
+        ref_variant = "V0" if "V0" in index["variants"] else index["variants"][0]
+        scores = composite_score(metrics_signal, ref_variant=ref_variant)
+        ranking = rank_variants(scores, rng=np.random.default_rng(study_config.study.seed))
+        _write(ranking, "variant_ranking.parquet")
+
+        score_pivot = scores.pivot(index="flight_id", columns="variant", values="composite_score")
+        score_by_variant = {name: score_pivot[name].to_numpy() for name in score_pivot.columns}
+        pairwise = compare_variant_pairs(score_by_variant)
+        pairwise_df = pd.DataFrame([vars(p) for p in pairwise])
+        _write(pairwise_df, "pairwise_tests.parquet")
+
+    manifest = read_manifest(run_dir) if (run_dir / "run_manifest.json").exists() else None
+    if manifest is not None:
+        manifest = update_step(
+            manifest,
+            "validate",
+            "completed",
+            started_at=started_at,
+            completed_at=datetime.now(UTC).isoformat(),
+            duration_s=time.monotonic() - start_time,
+            output_hashes=output_hashes,
+            extra={"n_variants": len(index["variants"])},
+        )
+        write_manifest(manifest, run_dir)
+    logger.info(
+        "validate: wrote metrics for %d variant(s) to %s", len(index["variants"]), validation_dir
+    )
 
 
 @app.command()
 def analyze(config: Path = _CONFIG_OPTION, run_id: str | None = _RUN_ID_OPTION) -> None:
     """Condition-dependent error analysis (heatmaps, importance, PDP)."""
-    raise NotImplementedError("`fsa analyze` is implemented in Phase 4.")
+    from aerovalid.validate.conditions import condition_heatmap_data
+
+    if run_id is None:
+        raise ConfigError("`fsa analyze` requires --run-id (an existing `fsa preprocess` run).")
+    run_dir = Path("runs") / run_id
+    setup_logging(run_id=run_id, log_file=run_dir / "log.txt")
+    index = _load_aligned_index(run_dir)
+
+    started_at = datetime.now(UTC).isoformat()
+    start_time = time.monotonic()
+    validation_dir = run_dir / "validation"
+    validation_dir.mkdir(parents=True, exist_ok=True)
+    output_hashes: dict[str, str] = {}
+
+    heatmap_frames = []
+    for variant in index["variants"]:
+        variant_df = _load_variant_aligned(run_dir, variant, index["flights"])
+        cond_columns = [c for c in variant_df.columns if c.startswith("cond_")]
+        if variant_df.empty or not cond_columns or "res_alt_m" not in variant_df.columns:
+            continue
+        long_df = variant_df.assign(abs_res_alt_m=variant_df["res_alt_m"].abs())
+        for cond_col in cond_columns:
+            heatmap = condition_heatmap_data(long_df, [cond_col], "abs_res_alt_m")
+            heatmap["variant"] = variant
+            heatmap["cond_column"] = cond_col
+            heatmap = heatmap.rename(columns={cond_col: "bin"})
+            heatmap_frames.append(heatmap)
+
+    condition_heatmaps = (
+        pd.concat(heatmap_frames, ignore_index=True) if heatmap_frames else pd.DataFrame()
+    )
+    heatmap_path = validation_dir / "condition_heatmaps.parquet"
+    condition_heatmaps.to_parquet(heatmap_path, index=False)
+    output_hashes[str(heatmap_path.relative_to(run_dir))] = hash_file(heatmap_path)
+
+    manifest = read_manifest(run_dir) if (run_dir / "run_manifest.json").exists() else None
+    if manifest is not None:
+        manifest = update_step(
+            manifest,
+            "analyze",
+            "completed",
+            started_at=started_at,
+            completed_at=datetime.now(UTC).isoformat(),
+            duration_s=time.monotonic() - start_time,
+            output_hashes=output_hashes,
+        )
+        write_manifest(manifest, run_dir)
+    logger.info("analyze: wrote condition heatmaps to %s", validation_dir)
 
 
 @app.command()

@@ -161,6 +161,61 @@ replay will be slightly optimistic until Phase 3 lands a real state estimator an
 (`run_windowed`), which is unaffected by this flight-level choice and already accepts
 an externally supplied init state per window.
 
+## ADR-013: `scikit-posthocs` is a main dependency, not a dev dependency
+
+**Context:** the build prompt's Phase 4 notes say "Friedman + Nemenyi using
+`scikit-posthocs` — add it to dev deps if needed." `validate/compare.py`'s
+`nemenyi_posthoc` and `validate/conditions.py`'s `dunn_posthoc` are called from `fsa
+validate`/`fsa analyze` -- the production CLI path, not test code.
+**Decision:** add `scikit-posthocs>=0.9` to `[project.dependencies]` in
+`pyproject.toml`, not `[project.optional-dependencies.dev]`.
+**Consequences:** anyone installing just the base package (not `[dev]`/`[all]`) still
+gets a working `fsa validate`/`fsa analyze`; this is consistent with how every other
+statistics library the pipeline actually runs on (`scipy`, `statsmodels`,
+`scikit-learn`) is already a main dependency, not a dev one.
+
+## ADR-014: Theil's U2 aligns the model and persistence-baseline index ranges
+
+**Context:** Theil's U2 = RMSE(model) / RMSE(naive persistence), analysis methods §4.
+The naive persistence forecast at sample `t` is `obs[t-1]`, which has no value for the
+first sample (`t=0`); a first implementation computed the model's RMSE over *all* `n`
+residual samples but the persistence RMSE over the `n-1`-length `np.diff(obs)` series --
+different sample counts covering different (merely overlapping, not identical) index
+ranges. A test constructed so `sim[t] = obs[t-1]` exactly (i.e. sim literally *is* the
+persistence forecast, so U2 must equal exactly 1.0) caught this: it returned ~0.91,
+not 1.0.
+**Decision:** when `n > 1`, compute the model's RMSE over `residual[1:]` (dropping the
+first sample, matching persistence's lack of a prediction there) before dividing by
+`RMSE(diff(obs))`. The overall `MetricSet.rmse` field (used by every other metric)
+still covers all `n` samples -- only the internal U2 calculation drops the first one.
+**Consequences:** `tests/unit/test_metrics.py::test_theil_u2_one_when_sim_equals_persistence`
+is an exact-equality test (`rel=1e-6`), not just a sanity bound, precisely because this
+alignment bug would otherwise silently fail it.
+
+## ADR-015: Phase 4's `fsa validate`/`fsa analyze` are intentionally reduced-scope
+
+**Context:** the full build prompt and analysis methods §4-6 describe a much larger
+surface for Phase 4 than what's wired into the CLI: per-(flight, variant, phase)
+cross-tabulated metrics (not just per-flight-pooled-by-phase), trajectory metrics
+wired into the CLI output, residual diagnostics wired in, `MixedLM`/Dunn wired into
+`fsa analyze` (only condition heatmaps are), and the E1-E3 `experiments/` scripts.
+Every one of these is implemented and unit-tested as a library function
+(`validate/trajectory.py`, `validate/diagnostics.py`, `validate/conditions.py`'s
+`dunn_posthoc`/`mixed_effects_condition_model`, etc.) -- none of it is vaporware --
+but not all of it is wired into the two CLI commands yet.
+**Decision:** ship `fsa validate` with per-flight signal metrics, composite scoring,
+flight-level bootstrap ranking, and pairwise comparison (the FR-VAL-005/006 core), and
+`fsa analyze` with condition heatmaps (FR-VAL-007's descriptive layer). Defer wiring
+the GBM-importance/PDP/MixedLM/Dunn condition-analysis layer and the trajectory/
+diagnostics modules into the CLI, and defer the `experiments/e0{1,2,3}_*.py` scripts
+and the full S2/S3 benchmark validation against the real simulator, to Phase 8
+(`fsa benchmark` is explicitly where the implementation plan puts "runs E1-E8 on seeds
+1-5" and "S1-S9 all PASS").
+**Consequences:** running `fsa validate && fsa analyze` today does not produce every
+artifact data spec §6 lists under `validation/` (e.g. no `condition_importance.parquet`
+yet); it produces a real, tested, working subset. The remaining library functions are
+already in place for Phase 8 to wire up without re-deriving any statistics.
+
 ## ADR-011: `prep/clean.py` rebases `t_s` to start at 0
 
 **Context:** data spec §4.1 defines `t_s` as "seconds from flight start; strictly

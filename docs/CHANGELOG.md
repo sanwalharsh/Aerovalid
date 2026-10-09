@@ -132,3 +132,39 @@ redesign this took); phase segmentation matches a scripted flight >= 90%; aligne
 pass canonical-schema validation with equal row counts across variants (by construction
 -- every variant is resampled onto the same telemetry grid). `fsa generate` ->
 `fsa preprocess` verified end to end (`@pytest.mark.slow` CLI test).
+
+## Phase 4 — Validation & Condition Analysis
+
+- Added `validate/metrics.py` (every FR-VAL-001 metric: ME/MAE/RMSE/NRMSE/MAPE, R²/
+  Pearson r, Theil's U2/TIC/U_M+U_S+U_C decomposition, error-growth exponent) and
+  `validate/tolerance.py` (compliance fraction, sustained time-to-first-exceedance).
+- Added `validate/trajectory.py` (3-D/horizontal/vertical RMSE, along/cross-track
+  decomposition relative to the observed ground track, CEP50/95).
+- Added `validate/aggregate.py` (`compute_metrics_table`: per-signal, optionally
+  grouped by phase/condition/flight; `aggregate_across_flights`: mean/median/IQR,
+  since flights are the unit of replication for inference).
+- Added `validate/compare.py` (moving-block bootstrap CI, Cliff's delta, the paired
+  Hodges-Lehmann shift estimator, Wilcoxon signed-rank + Holm-corrected pairwise
+  comparison, Friedman + Nemenyi) and `validate/composite.py` (weighted composite
+  score, flight-level bootstrap ranking with CIs and P(best), Spearman/Kendall rank
+  agreement against a ground-truth ordering).
+- Added `validate/conditions.py` (binned heatmap data; `HistGradientBoostingRegressor`
+  with grouped-by-flight CV + permutation importance + partial dependence;
+  Kruskal-Wallis + Dunn; a `MixedLM` model for condition effects adjusted for repeated
+  flights) and `validate/diagnostics.py` (ACF/Ljung-Box, normality, ADF stationarity,
+  Welch power spectrum).
+- Implemented `fsa validate` (per-flight signal metrics, composite score, bootstrap
+  ranking, pairwise comparison -> `validation/{metrics_signal,metrics_phase,
+  variant_ranking,pairwise_tests}.parquet`) and `fsa analyze` (condition heatmaps ->
+  `validation/condition_heatmaps.parquet`); both manifest-tracked. Scope intentionally
+  reduced vs. the full spec -- see DECISIONS.md ADR-015.
+- Added `scikit-posthocs` as a main (not dev) dependency -- see ADR-013.
+
+DoD: all metric formulas verified against hand-computed or analytic fixtures (51 unit
+tests across 8 test files) -- including an exact-equality Theil's U2 test that caught a
+real alignment bug in the first implementation (ADR-014); `compare_variant_pairs`
+correctly separates a well-separated synthetic pair and correctly fails to reject a
+near-identical one; `fsa generate -> preprocess -> validate -> analyze` verified
+end-to-end (`@pytest.mark.slow` CLI test) producing a 2-variant ranking. Full S2/S3
+benchmark validation against the real simulator across seeds 1-5 deferred to Phase 8's
+`fsa benchmark` (ADR-015).

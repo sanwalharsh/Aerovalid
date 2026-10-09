@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from typer.testing import CliRunner
 
@@ -37,7 +38,7 @@ def test_help_lists_all_commands() -> None:
 
 
 @pytest.mark.req("FR-OPS-001")
-@pytest.mark.parametrize("command", ["validate", "predict", "detect", "identify", "report"])
+@pytest.mark.parametrize("command", ["predict", "detect", "identify", "report"])
 def test_unimplemented_commands_raise_not_implemented(command: str) -> None:
     with pytest.raises(NotImplementedError):
         runner.invoke(app, [command], catch_exceptions=False)
@@ -142,3 +143,50 @@ def test_preprocess_cli_builds_aligned_datasets(
     assert (run_dir / "aligned" / "index.json").exists()
     manifest = json.loads((run_dir / "run_manifest.json").read_text())
     assert manifest["steps"]["preprocess"]["status"] == "completed"
+
+
+@pytest.mark.slow
+@pytest.mark.req("FR-VAL-006")
+def test_validate_and_analyze_cli_produce_ranking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config = _REPO_ROOT / "configs" / "default.yaml"
+    generate_args = [
+        "generate",
+        "--config",
+        str(config),
+        "--run-id",
+        "clitest",
+        "--set",
+        "generate.n_flights=2",
+        "--set",
+        "generate.scenarios=[doublet_series]",
+        "--set",
+        "variants=[V0, V1]",
+    ]
+    assert runner.invoke(app, generate_args, catch_exceptions=False).exit_code == 0
+
+    preprocess_args = ["preprocess", "--config", str(config), "--run-id", "clitest"]
+    assert runner.invoke(app, preprocess_args, catch_exceptions=False).exit_code == 0
+
+    validate_args = ["validate", "--config", str(config), "--run-id", "clitest"]
+    result = runner.invoke(app, validate_args, catch_exceptions=False)
+    assert result.exit_code == 0
+
+    run_dir = tmp_path / "runs" / "clitest"
+    validation_dir = run_dir / "validation"
+    assert (validation_dir / "metrics_signal.parquet").exists()
+    assert (validation_dir / "variant_ranking.parquet").exists()
+    assert (validation_dir / "pairwise_tests.parquet").exists()
+    ranking = pd.read_parquet(validation_dir / "variant_ranking.parquet")
+    assert set(ranking["variant"]) == {"V0", "V1"}
+    manifest = json.loads((run_dir / "run_manifest.json").read_text())
+    assert manifest["steps"]["validate"]["status"] == "completed"
+
+    analyze_args = ["analyze", "--config", str(config), "--run-id", "clitest"]
+    result = runner.invoke(app, analyze_args, catch_exceptions=False)
+    assert result.exit_code == 0
+    assert (validation_dir / "condition_heatmaps.parquet").exists()
+    manifest = json.loads((run_dir / "run_manifest.json").read_text())
+    assert manifest["steps"]["analyze"]["status"] == "completed"
