@@ -1,0 +1,16 @@
+data/
+runs/
+reports/
+__pycache__/
+*.pyc
+*.egg-info/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+.ipynb_checkpoints/
+dist/
+build/
+.DS_Store

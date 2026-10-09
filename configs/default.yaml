@@ -1,0 +1,69 @@
+# Default AeroValidate study config (data spec §7). Every key has a pydantic default;
+# this file pins the demo-profile values explicitly for clarity and documentation.
+study:
+  name: demo
+  seed: 20260101
+  profile: demo
+
+vehicle:
+  ref: generic_uav_v1
+
+generate:
+  n_flights: 12
+  scenarios: [mixed_mission, climb_cruise, turn_series, doublet_series]
+  conditions:
+    alt0_m: [500, 6000]
+    v0_mps: [28, 60]
+    mass_kg: [22, 28]
+    wind_mean_mps: [0, 10]
+    turb: [none, light, moderate]
+    dT_K: [-10, 15]
+  sampling: sobol
+  telemetry_rate_hz: 10
+  truth_rate_hz: 100
+  faults:
+    probability_per_flight: 0.5
+    library: configs/faults/
+
+variants: [V0, V1, V2, V3, V4, V5]
+
+preprocess:
+  grid_hz: 10
+  max_gap_s: 0.5
+  hampel: {window: 7, n_sigma: 4}
+  sync: {method: xcorr, ref_signals: [alt_m, vel_air_mps], max_lag_s: 3, drift: true}
+  sg: {window: 11, order: 3}
+
+validate:
+  signals: [alt_m, vel_air_mps, gamma_rad, chi_rad, nz_g, pitch_rad, roll_rad, x_m, y_m]
+  horizons_s: [1, 2, 5, 10]
+  window_s: 10
+  stride_s: 5
+  weights: {}
+  tolerances: {}
+  bootstrap: {n: 2000, block_s: 10}
+
+predict:
+  tasks: [residual, hybrid, forecast]
+  targets: [alt_m, vel_air_mps]
+  horizons_s: [1, 5, 10, 30]
+  models: [ridge, hgb, rf]
+  seq: false
+  cv: {scheme: loso, folds: 6}
+  conformal: {alpha: 0.1}
+
+detect:
+  target_far_per_hr: 1.0
+  detectors: [zscore, ewma, cusum, mahalanobis, iforest, pelt]
+  early_warning: {horizon_s: 30, p_star: 0.8}
+
+identify:
+  params: [CL0, CLa, CD0, k, thrust_lapse_n]
+  bounds: {}
+  sobol: {n: 1024}
+  regimes: {mach_bins: [0, 0.12, 0.18, 0.25]}
+  revalidate: true
+
+report:
+  formats: [html]
+  pdf: false

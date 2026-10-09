@@ -4,13 +4,13 @@ Work the phases **in order**. Tick boxes as you go (`[x]`). Each phase ends with
 
 ---
 
-## Phase 0 — Scaffolding  `[ ]`
+## Phase 0 — Scaffolding  `[x]`
 Tasks
-- [ ] `pyproject.toml` (src layout, extras `ml`, `adapters`, `dev`, `all`), `Makefile`, `.gitignore` (data/, runs/, reports/), `.pre-commit-config.yaml`, `ruff`/`mypy` config, GitHub Actions workflow.
-- [ ] Package skeleton per CLAUDE.md §4 with `__init__.py`, `py.typed`.
-- [ ] `core/`: config models (pydantic) + loader with includes/overrides, manifest writer, logging, errors, RNG helper, units/angles, signal registry.
-- [ ] `cli.py` with typer app and stub subcommands.
-- [ ] `docs/DECISIONS.md`, `docs/CHANGELOG.md`, `docs/CONFIG_REFERENCE.md` generator script.
+- [x] `pyproject.toml` (src layout, extras `ml`, `adapters`, `dev`, `all`), `Makefile`, `.gitignore` (data/, runs/, reports/), `.pre-commit-config.yaml`, `ruff`/`mypy` config, GitHub Actions workflow.
+- [x] Package skeleton per CLAUDE.md §4 with `__init__.py`, `py.typed`.
+- [x] `core/`: config models (pydantic) + loader with includes/overrides, manifest writer, logging, errors, RNG helper, units/angles, signal registry.
+- [x] `cli.py` with typer app and stub subcommands.
+- [x] `docs/DECISIONS.md`, `docs/CHANGELOG.md`, `docs/CONFIG_REFERENCE.md` generator script.
 DoD: `pip install -e ".[dev]"` works; `fsa --help` lists commands; unit tests for config/manifest/RNG/angles pass; CI green. (FR-COR-001,002,004,006,007; FR-OPS-001 partial, 003, 005)
 
 ## Phase 1 — Physics & simulation  `[ ]`
