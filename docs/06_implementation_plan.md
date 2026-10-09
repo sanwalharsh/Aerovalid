@@ -40,11 +40,11 @@ DoD: recovery tests: offset ±0.5 sample, drift within 10 ppm, spikes ≥ 95% re
 - [x] `fsa validate`, `fsa analyze` (reduced scope -- see DECISIONS.md ADR-015); E1–E3 scripts and the full S2/S3 benchmark validation deferred to Phase 8's `fsa benchmark`.
 DoD: metrics validated against reference formulas on fixtures (51 unit tests, hand-computed/analytic references); null-pair statistical tests pass (`compare_variant_pairs` correctly fails to reject a near-identical pair, correctly rejects a well-separated pair). S2/S3 against the real simulator/benchmark seeds deferred to Phase 8 per ADR-015. (FR-VAL-001…008, 010)
 
-## Phase 5 — Predictive analysis  `[ ]`
-- [ ] Window/dataset builder, splitters (LOFO, grouped K-fold, leave-condition-out), model zoo wrappers (`fit/predict/predict_interval`), baselines, nested CV + search, explainability.
-- [ ] Tasks A, B, C; conformal + quantile; extrapolation study; optional torch GRU/TCN.
-- [ ] `fsa predict`; E4–E5 scripts.
-DoD: leakage tests pass; S4 and S5 pass; skill-score tables generated; artifacts per data spec. (FR-PRD-001…010)
+## Phase 5 — Predictive analysis  `[x]`
+- [x] Window/dataset builder, splitters (LOFO, grouped K-fold, leave-condition-out), model zoo wrappers (`fit/predict/predict_interval`), baselines, nested CV + search, explainability.
+- [x] Tasks A, B, C; conformal + quantile; optional torch GRU/TCN. (extrapolation study, FR-PRD-010, deferred -- see note below)
+- [x] `fsa predict` (reduced scope -- see DECISIONS.md ADR-017).
+DoD: leakage tests pass (`test_datasets.py`'s per-flight reconstruction test); skill-score/RMSE-reduction checks pass on synthetic data; artifacts per data spec (`predict/{cv_results,forecasts,intervals,explain}.parquet`, `models/residual/*.joblib`). (FR-PRD-001…009; FR-PRD-010 "S"-priority extrapolation study and FR-PRD-011 "C"-priority online-update demo deferred, not required for DoD)
 
 ## Phase 6 — Deviation detection  `[ ]`
 - [ ] Baseline normalisation, statistical detectors, ML detectors, PELT/BinSeg onset estimation, threshold calibration, early-warning predictor, streaming API, evaluation protocol.

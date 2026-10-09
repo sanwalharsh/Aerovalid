@@ -9,7 +9,9 @@ import json
 import logging
 import time
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 
 import numpy as np
@@ -28,6 +30,9 @@ from aerovalid.core.manifest import (
     update_step,
     write_manifest,
 )
+from aerovalid.predict.cv import CVResult
+from aerovalid.predict.datasets import WindowedDataset
+from aerovalid.predict.models import ResidualModel
 from aerovalid.prep.pipeline import preprocess_flight
 from aerovalid.sim.protocols import load_vehicle_params
 from aerovalid.sim.truth import TruthModel
@@ -513,10 +518,300 @@ def analyze(config: Path = _CONFIG_OPTION, run_id: str | None = _RUN_ID_OPTION) 
     logger.info("analyze: wrote condition heatmaps to %s", validation_dir)
 
 
+def _predict_model_factory(name: str) -> ResidualModel:
+    """`predict.models` name -> a fresh, unfitted `ResidualModel` instance."""
+    from aerovalid.predict.models.arimax import ARIMAXModel
+    from aerovalid.predict.models.gru import GRUModel
+    from aerovalid.predict.models.hgb import HGBModel
+    from aerovalid.predict.models.rf import RFModel
+    from aerovalid.predict.models.ridge import RidgeModel
+
+    factories: dict[str, Callable[[], ResidualModel]] = {
+        "ridge": RidgeModel,
+        "hgb": HGBModel,
+        "rf": RFModel,
+        "arimax": ARIMAXModel,
+        "gru": GRUModel,
+    }
+    if name not in factories:
+        raise ConfigError(f"Unknown predict model '{name}' (expected one of {sorted(factories)}).")
+    return factories[name]()
+
+
+def _predict_resolve_model_names(configured: list[str], seq: bool) -> list[str]:
+    """`predict.models` plus `"gru"` when `predict.seq` is set and torch is available."""
+    from aerovalid.predict.models.gru import HAS_TORCH
+
+    names = list(configured)
+    if seq:
+        if HAS_TORCH:
+            if "gru" not in names:
+                names.append("gru")
+        else:
+            logger.warning("predict: predict.seq is true but torch is not installed; skipping gru.")
+    return names
+
+
+def _predict_splits(
+    scheme: str, folds: int, flight_id: np.ndarray
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    from aerovalid.predict.datasets import grouped_kfold, leave_one_flight_out
+
+    if scheme == "loso":
+        return list(leave_one_flight_out(flight_id))
+    return list(grouped_kfold(flight_id, n_splits=folds))
+
+
+def _predict_cv_rows_and_best(
+    dataset: WindowedDataset,
+    splits: list[tuple[np.ndarray, np.ndarray]],
+    model_names: list[str],
+    context: dict[str, object],
+) -> tuple[list[dict[str, object]], str, CVResult]:
+    """Cross-validate every model in `model_names`, return `(rows, best_name, best_result)`."""
+    from aerovalid.predict.cv import cross_validate
+
+    rows: list[dict[str, object]] = []
+    best_name, best_result, best_rmse = "", None, np.inf
+    for name in model_names:
+        factory: Callable[[], ResidualModel] = partial(_predict_model_factory, name)
+        result = cross_validate(factory, dataset, iter(splits))
+        rows.append(
+            {
+                **context,
+                "model": name,
+                "rmse": result.overall_metrics.rmse,
+                "mae": result.overall_metrics.mae,
+                "r2": result.overall_metrics.r2,
+                "n_samples": len(dataset),
+            }
+        )
+        if result.overall_metrics.rmse < best_rmse:
+            best_rmse, best_name, best_result = result.overall_metrics.rmse, name, result
+    if best_result is None:
+        raise ConfigError("fsa predict: no usable models in predict.models.")
+    return rows, best_name, best_result
+
+
+def _predict_conformal_interval_row(
+    best_name: str,
+    dataset: WindowedDataset,
+    train_idx: np.ndarray,
+    test_idx: np.ndarray,
+    alpha: float,
+    context: dict[str, object],
+) -> dict[str, object]:
+    """Flight-grouped calibration split + split-conformal interval summary for the
+    `(variant, target, horizon)` combination's best model."""
+    from aerovalid.predict.uncertainty import SplitConformalWrapper, evaluate_coverage
+
+    train_flights = pd.unique(dataset.flight_id[train_idx])
+    if len(train_flights) >= 2:
+        n_calib_flights = max(1, len(train_flights) // 5)
+        calib_flights = set(train_flights[:n_calib_flights])
+        calib_mask = np.isin(dataset.flight_id[train_idx], list(calib_flights))
+        calib_idx, fit_idx = train_idx[calib_mask], train_idx[~calib_mask]
+    else:
+        # Only one training flight available (e.g. a small demo run under
+        # leave-one-flight-out): a flight-disjoint split isn't possible, so fall
+        # back to a row-level 80/20 split within it.
+        split_point = max(1, int(0.8 * len(train_idx)))
+        fit_idx, calib_idx = train_idx[:split_point], train_idx[split_point:]
+
+    wrapper = SplitConformalWrapper(_predict_model_factory(best_name), alpha=alpha)
+    wrapper.fit(
+        dataset.features.iloc[fit_idx],
+        dataset.target[fit_idx],
+        dataset.features.iloc[calib_idx],
+        dataset.target[calib_idx],
+    )
+    lower, upper = wrapper.predict_interval(dataset.features.iloc[test_idx])
+    coverage, mean_width = evaluate_coverage(lower, upper, dataset.target[test_idx])
+    return {
+        **context,
+        "model": best_name,
+        "alpha": alpha,
+        "coverage": coverage,
+        "mean_width": mean_width,
+    }
+
+
+def _predict_for_target(
+    variant_df: pd.DataFrame,
+    variant: str,
+    target_signal: str,
+    horizon_s: float,
+    dt: float,
+    feature_signals: list[str],
+    cv_scheme: str,
+    cv_folds: int,
+    model_names: list[str],
+    conformal_alpha: float,
+    models_dir: Path,
+) -> tuple[list[dict[str, object]], pd.DataFrame, dict[str, object], pd.DataFrame]:
+    """Task A + Task B CV, a conformal-interval summary, and an explainability table
+    for one `(variant, target_signal)` combination; saves the best Task A model."""
+    import joblib
+
+    from aerovalid.predict.datasets import build_windows
+    from aerovalid.predict.explain import permutation_importance_table
+    from aerovalid.predict.tasks import task_b_hybrid_correction
+
+    dataset = build_windows(
+        variant_df, feature_signals, target_signal, horizon_s, dt, include_future_sim=True
+    )
+    splits = _predict_splits(cv_scheme, cv_folds, dataset.flight_id)
+    all_test_idx = np.concatenate([test_idx for _, test_idx in splits])
+    context: dict[str, object] = {
+        "variant": variant,
+        "target": target_signal,
+        "horizon_s": horizon_s,
+    }
+
+    cv_rows, best_name, best_result = _predict_cv_rows_and_best(
+        dataset, splits, model_names, {**context, "task": "residual"}
+    )
+
+    train_idx, test_idx = splits[0]
+    hybrid = task_b_hybrid_correction(
+        _predict_model_factory(best_name), dataset, train_idx, test_idx
+    )
+    cv_rows.append(
+        {
+            **context,
+            "task": "hybrid",
+            "model": best_name,
+            "rmse": hybrid.rmse_hybrid,
+            "mae": float("nan"),
+            "r2": float("nan"),
+            "n_samples": len(test_idx),
+        }
+    )
+    interval_row = _predict_conformal_interval_row(
+        best_name, dataset, train_idx, test_idx, conformal_alpha, context
+    )
+
+    final_model = _predict_model_factory(best_name)
+    final_model.fit(dataset.features, dataset.target, dataset.flight_id)
+    task_dir = models_dir / "residual"
+    task_dir.mkdir(parents=True, exist_ok=True)
+    joblib.dump(final_model, task_dir / f"{variant}_{target_signal}_{best_name}.joblib")
+
+    importance = permutation_importance_table(
+        final_model, dataset.features, dataset.target, n_repeats=5
+    )
+    importance["variant"] = variant
+    importance["target"] = target_signal
+    importance["horizon_s"] = horizon_s
+    importance["model"] = best_name
+
+    forecast_df = pd.DataFrame(
+        {
+            "variant": variant,
+            "target": target_signal,
+            "horizon_s": horizon_s,
+            "model": best_name,
+            "flight_id": dataset.flight_id[all_test_idx],
+            "t_s": dataset.t_s[all_test_idx],
+            "actual_residual": best_result.actuals,
+            "predicted_residual": best_result.predictions,
+        }
+    )
+    return cv_rows, forecast_df, interval_row, importance
+
+
 @app.command()
 def predict(config: Path = _CONFIG_OPTION, run_id: str | None = _RUN_ID_OPTION) -> None:
-    """Residual/hybrid/forecast predictive models (FR-PRD-001...010)."""
-    raise NotImplementedError("`fsa predict` is implemented in Phase 5.")
+    """Residual/hybrid predictive models across variants and configured targets
+    (FR-PRD-001...003/005/007/009). Scoped to the first configured horizon and a
+    flight-grouped conformal calibration split per `(variant, target)`; Task C
+    (forecast) and full horizon/CV-scheme sweeps are the library's job
+    (`predict/`, unit-tested) rather than this CLI's -- see DECISIONS.md ADR-017.
+    """
+    if run_id is None:
+        raise ConfigError("`fsa predict` requires --run-id (an existing `fsa preprocess` run).")
+    run_dir = Path("runs") / run_id
+    setup_logging(run_id=run_id, log_file=run_dir / "log.txt")
+    study_config = load_config(config)
+    index = _load_aligned_index(run_dir)
+
+    predict_config = study_config.predict
+    model_names = _predict_resolve_model_names(predict_config.models, predict_config.seq)
+    feature_signals = study_config.validation.signals
+    horizon_s = predict_config.horizons_s[0]
+    dt = 1.0 / study_config.preprocess.grid_hz
+
+    started_at = datetime.now(UTC).isoformat()
+    start_time = time.monotonic()
+    predict_dir = run_dir / "predict"
+    models_dir = predict_dir / "models"
+    predict_dir.mkdir(parents=True, exist_ok=True)
+    output_hashes: dict[str, str] = {}
+
+    cv_rows: list[dict[str, object]] = []
+    forecast_frames: list[pd.DataFrame] = []
+    interval_rows: list[dict[str, object]] = []
+    explain_frames: list[pd.DataFrame] = []
+
+    for variant in index["variants"]:
+        variant_df = _load_variant_aligned(run_dir, variant, index["flights"])
+        if variant_df.empty:
+            continue
+        for target_signal in predict_config.targets:
+            if f"res_{target_signal}" not in variant_df.columns:
+                continue
+            target_cv_rows, forecast_df, interval_row, importance = _predict_for_target(
+                variant_df,
+                variant,
+                target_signal,
+                horizon_s,
+                dt,
+                feature_signals,
+                predict_config.cv.scheme,
+                predict_config.cv.folds,
+                model_names,
+                predict_config.conformal.alpha,
+                models_dir,
+            )
+            cv_rows.extend(target_cv_rows)
+            forecast_frames.append(forecast_df)
+            interval_rows.append(interval_row)
+            explain_frames.append(importance)
+
+    def _write(df: pd.DataFrame, name: str) -> None:
+        path = predict_dir / name
+        df.to_parquet(path, index=False)
+        output_hashes[str(path.relative_to(run_dir))] = hash_file(path)
+
+    _write(pd.DataFrame(cv_rows), "cv_results.parquet")
+    _write(
+        pd.concat(forecast_frames, ignore_index=True) if forecast_frames else pd.DataFrame(),
+        "forecasts.parquet",
+    )
+    _write(pd.DataFrame(interval_rows), "intervals.parquet")
+    _write(
+        pd.concat(explain_frames, ignore_index=True) if explain_frames else pd.DataFrame(),
+        "explain.parquet",
+    )
+    (predict_dir / "metrics.json").write_text(json.dumps(cv_rows, indent=2, default=str))
+    output_hashes[str((predict_dir / "metrics.json").relative_to(run_dir))] = hash_file(
+        predict_dir / "metrics.json"
+    )
+
+    manifest = read_manifest(run_dir) if (run_dir / "run_manifest.json").exists() else None
+    if manifest is not None:
+        manifest = update_step(
+            manifest,
+            "predict",
+            "completed",
+            started_at=started_at,
+            completed_at=datetime.now(UTC).isoformat(),
+            duration_s=time.monotonic() - start_time,
+            output_hashes=output_hashes,
+            extra={"n_variants": len(index["variants"]), "horizon_s": horizon_s},
+        )
+        write_manifest(manifest, run_dir)
+    logger.info("predict: wrote %d cv result rows to %s", len(cv_rows), predict_dir)
 
 
 @app.command()

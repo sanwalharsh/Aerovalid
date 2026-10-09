@@ -76,7 +76,7 @@ plugins = ["pydantic.mypy"]
 [[tool.mypy.overrides]]
 module = [
   "ruptures.*", "SALib.*", "pandera.*", "joblib.*", "pyulog.*", "pymavlink.*", "scipy.*",
-  "scikit_posthocs.*", "statsmodels.*", "sklearn.*",
+  "scikit_posthocs.*", "statsmodels.*", "sklearn.*", "torch.*", "shap.*", "lightgbm.*",
 ]
 ignore_missing_imports = true
 

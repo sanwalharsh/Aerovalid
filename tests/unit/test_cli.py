@@ -38,7 +38,7 @@ def test_help_lists_all_commands() -> None:
 
 
 @pytest.mark.req("FR-OPS-001")
-@pytest.mark.parametrize("command", ["predict", "detect", "identify", "report"])
+@pytest.mark.parametrize("command", ["detect", "identify", "report"])
 def test_unimplemented_commands_raise_not_implemented(command: str) -> None:
     with pytest.raises(NotImplementedError):
         runner.invoke(app, [command], catch_exceptions=False)
@@ -190,3 +190,62 @@ def test_validate_and_analyze_cli_produce_ranking(
     assert (validation_dir / "condition_heatmaps.parquet").exists()
     manifest = json.loads((run_dir / "run_manifest.json").read_text())
     assert manifest["steps"]["analyze"]["status"] == "completed"
+
+
+@pytest.mark.slow
+@pytest.mark.req("FR-PRD-001")
+def test_predict_cli_produces_cv_results_and_models(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config = _REPO_ROOT / "configs" / "default.yaml"
+    generate_args = [
+        "generate",
+        "--config",
+        str(config),
+        "--run-id",
+        "clitest",
+        "--set",
+        "generate.n_flights=2",
+        "--set",
+        "generate.scenarios=[doublet_series]",
+        "--set",
+        "variants=[V0, V1]",
+    ]
+    assert runner.invoke(app, generate_args, catch_exceptions=False).exit_code == 0
+
+    preprocess_args = ["preprocess", "--config", str(config), "--run-id", "clitest"]
+    assert runner.invoke(app, preprocess_args, catch_exceptions=False).exit_code == 0
+
+    # `predict` has no `--set` option (unlike `generate`), so a small `include:`-based
+    # override config keeps this test's model/target/horizon sweep fast. `predict()`
+    # never resolves sibling config dirs (vehicles/variants/...) the way generate()
+    # does, so this override doesn't need to live next to `configs/default.yaml`.
+    predict_config = tmp_path / "predict_test_config.yaml"
+    predict_config.write_text(
+        f"include: [{config}]\n"
+        "predict:\n"
+        "  models: [ridge]\n"
+        "  targets: [alt_m]\n"
+        "  horizons_s: [1.0]\n"
+    )
+    predict_args = ["predict", "--config", str(predict_config), "--run-id", "clitest"]
+    result = runner.invoke(app, predict_args, catch_exceptions=False)
+    assert result.exit_code == 0
+
+    run_dir = tmp_path / "runs" / "clitest"
+    predict_dir = run_dir / "predict"
+    assert (predict_dir / "cv_results.parquet").exists()
+    assert (predict_dir / "forecasts.parquet").exists()
+    assert (predict_dir / "intervals.parquet").exists()
+    assert (predict_dir / "explain.parquet").exists()
+    assert (predict_dir / "metrics.json").exists()
+    assert (predict_dir / "models" / "residual" / "V0_alt_m_ridge.joblib").exists()
+    assert (predict_dir / "models" / "residual" / "V1_alt_m_ridge.joblib").exists()
+
+    cv_results = pd.read_parquet(predict_dir / "cv_results.parquet")
+    assert set(cv_results["variant"]) == {"V0", "V1"}
+    assert set(cv_results["task"]) == {"residual", "hybrid"}
+
+    manifest = json.loads((run_dir / "run_manifest.json").read_text())
+    assert manifest["steps"]["predict"]["status"] == "completed"

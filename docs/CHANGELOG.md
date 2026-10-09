@@ -168,3 +168,40 @@ near-identical one; `fsa generate -> preprocess -> validate -> analyze` verified
 end-to-end (`@pytest.mark.slow` CLI test) producing a 2-variant ranking. Full S2/S3
 benchmark validation against the real simulator across seeds 1-5 deferred to Phase 8's
 `fsa benchmark` (ADR-015).
+
+## Phase 5 — Predictive Analysis
+
+- Added `predict/datasets.py` (`build_windows`: leakage-safe lagged/rolling-stat
+  features + a target at horizon `h`, built one flight at a time so no window can
+  straddle a flight boundary; `leave_one_flight_out`, `grouped_kfold`,
+  `leave_condition_out` splitters) and `predict/baselines.py` (persistence, sim-only,
+  constant-velocity, mean-by-condition-bin).
+- Added the model zoo: `predict/models/{ridge,hgb,rf,arimax,gru}.py`, all implementing
+  the shared `ResidualModel` protocol (`fit`/`predict`/`predict_interval`) from
+  `predict/models/__init__.py`. `gru.py` is a guarded optional `torch` import (no
+  hard dependency); `arimax.py` uses `statsmodels.GLSAR` rather than true
+  `SARIMAX`/`ARIMA` since this project's windowed, flight-shuffled evaluation doesn't
+  fit a contiguous-sequence forecaster -- see ADR-016.
+- Added `predict/tasks.py` (Task A residual prediction, Task B hybrid correction
+  scored against sim-only and persistence-of-residual, Task C forecast with a
+  baseline-relative skill score), `predict/uncertainty.py` (split-conformal wrapper,
+  coverage/width, Winkler score), `predict/cv.py` (`cross_validate` over any splitter;
+  bounded random-search nested CV, `predict/explain.py` (permutation importance,
+  partial dependence, guarded optional SHAP).
+- Implemented `fsa predict`: Task A (cross-validated across every configured model)
+  and Task B (hybrid correction) for every variant and configured target signal, at
+  the first configured horizon; the best model per `(variant, target)` is refit on
+  the full dataset and persisted (`predict/models/residual/*.joblib`), with a
+  flight-grouped split-conformal interval summary and a permutation-importance table.
+  Scope intentionally reduced vs. the full spec (no Task C, no full horizon/CV-scheme
+  sweep in the CLI) -- see ADR-017.
+
+DoD: `test_datasets.py` proves no window straddles a flight boundary by reconstructing
+multi-flight output from independent single-flight builds; every model wrapper passes
+a shared interface-contract test (`test_models.py`); Task B's hybrid correction beats
+sim-only RMSE on synthetic data with a learnable residual signal (`test_tasks.py`);
+split-conformal intervals hit approximate target coverage (`test_uncertainty.py`);
+nested CV search never sees outer-test rows (`test_cv.py`); `fsa generate ->
+preprocess -> predict` verified end-to-end (`@pytest.mark.slow` CLI test) producing
+`cv_results`/`forecasts`/`intervals`/`explain` parquet artifacts and a saved model per
+variant. `make lint test` green at 88% coverage.

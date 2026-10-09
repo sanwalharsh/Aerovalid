@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
 import pytest
 import yaml
 
@@ -74,4 +76,47 @@ def test_vehicle() -> VehicleParams:
         bank_limit_rad=1.0472,
         tau_thrust_s=0.4,
         tau_alpha_s=0.15,
+    )
+
+
+def _synthetic_flight(flight_id: str, n: int, dt: float, seed: int) -> pd.DataFrame:
+    """One flight's worth of synthetic `prep/align.py`-shaped output: `alt_m`'s
+    residual (obs - sim) is a smooth, flight-specific sinusoid -- learnable from
+    recent lag features, unlike pure noise -- so `predict/` models have a real
+    signal to beat the zero-residual/persistence baselines on.
+    """
+    rng = np.random.default_rng(seed)
+    t = np.arange(n) * dt
+    amplitude = rng.uniform(1.5, 3.0)
+    phase = rng.uniform(0.0, 2.0 * np.pi)
+    period_s = 40.0
+    res_alt_m = amplitude * np.sin(2.0 * np.pi * t / period_s + phase)
+    obs_alt_m = 500.0 + 0.5 * t + rng.normal(0.0, 0.05, n)
+    obs_vel_air_mps = 40.0 + 2.0 * np.sin(2.0 * np.pi * t / 60.0) + rng.normal(0.0, 0.1, n)
+
+    return pd.DataFrame(
+        {
+            "flight_id": flight_id,
+            "t_s": t,
+            "obs_alt_m": obs_alt_m,
+            "sim_alt_m": obs_alt_m - res_alt_m,
+            "res_alt_m": res_alt_m,
+            "mask_alt_m": np.zeros(n, dtype=bool),
+            "obs_vel_air_mps": obs_vel_air_mps,
+            "sim_vel_air_mps": obs_vel_air_mps,
+            "res_vel_air_mps": np.zeros(n),
+            "mask_vel_air_mps": np.zeros(n, dtype=bool),
+            "phase": "cruise",
+            "cond_alt_band": "mid",
+        }
+    )
+
+
+@pytest.fixture
+def synthetic_predict_aligned() -> pd.DataFrame:
+    """Six 80-sample (dt=1.0 s) synthetic flights concatenated, shaped like
+    `prep/align.py`'s aligned output, for `predict/` module tests."""
+    return pd.concat(
+        [_synthetic_flight(f"F{i:04d}", n=80, dt=1.0, seed=i) for i in range(6)],
+        ignore_index=True,
     )

@@ -260,3 +260,58 @@ target.
 `_LOW_CORRELATION_THRESHOLD`) windows rather than three, so it activates slightly more
 often on noisy/short flights; `estimate_drift=False` remains available to skip it
 entirely when only the constant lag is needed.
+
+## ADR-016: `predict/models/arimax.py`'s "ARIMAX" is `statsmodels.GLSAR`, not `SARIMAX`/`ARIMA`
+
+**Context:** FR-PRD-005 asks for an ARIMAX-family model among the residual predictors.
+This project's evaluation framework (`predict/datasets.py::build_windows`) produces
+leakage-safe *windows*, split by flight via leave-one-flight-out / grouped K-fold / 
+leave-condition-out (CLAUDE.md §2's "no data leakage... by flight/run" rule) -- any given
+training or test row can be an arbitrary flight/time combination, not a contiguous
+run of timesteps. `statsmodels.tsa.statespace.SARIMAX`/`ARIMA` are built around forecasting
+forward from the end of one contiguous endogenous series (`.forecast(steps=...)` or
+`.predict(start=, end=)` on the fitted series' own index); they don't offer a
+`predict(exog=<arbitrary new rows>)` operation compatible with the shuffled/grouped
+splits every other model in this module uses.
+**Decision:** use `statsmodels.regression.linear_model.GLSAR` instead: ordinary linear
+regression on the exogenous (lagged-feature) design matrix, with an AR(`ar_order`)
+error structure fit via `iterative_fit`. This keeps the "regression + autoregressive
+error" idea that motivates reaching for ARIMAX in the first place, while
+`GLSAR.predict(design_matrix)` (really just `design @ params` via `_design_matrix`)
+works on any row, so it fits the same `ResidualModel` fit/predict/predict_interval
+protocol as `RidgeModel`/`HGBModel`/`RFModel` and plugs into the same CV harness.
+**Consequences:** `ARIMAXModel` is a stand-in that is deliberately not a true
+`SARIMAX` -- documented in the module's own docstring so a future reader doesn't
+mistake it for one; a true replay-mode contiguous-sequence ARIMA could still be added
+later as a separate `Task C` (windowed multi-step forecast) special case if FR-PRD-005
+is revisited for that scenario specifically.
+
+## ADR-017: `fsa predict`'s CLI scope -- Task A/B only, first configured horizon
+
+**Context:** FR-PRD-001...010 together ask for three tasks (residual/hybrid/forecast)
+across every configured target signal, every horizon in `predict.horizons_s`, every
+variant, every model in `predict.models`, plus nested hyper-parameter search and
+multiple CV schemes -- the full cross-product is a research-sweep tool, not a single
+CLI invocation's job. ADR-015 already set the precedent of a reduced-scope CLI for
+`fsa validate`/`fsa analyze`, with the full machinery living in the library and
+exercised there by tests.
+**Decision:** `fsa predict` iterates every variant and every signal in
+`predict.targets`, but only the *first* entry of `predict.horizons_s`, and only Task A
+(residual prediction, scored by cross-validating every configured model via
+`predict/cv.py::cross_validate`) plus Task B (hybrid correction, evaluated on one
+representative split rather than pooled across folds). Task C (forecast) is not run by
+the CLI. For each `(variant, target)` combination, the best-scoring model is refit on
+the full dataset, persisted to `predict/models/residual/<variant>_<target>_<model>.joblib`
+via `joblib`, and used for a flight-grouped split-conformal interval summary
+(`predict/intervals.parquet`) and a permutation-importance table
+(`predict/explain.parquet`). The conformal calibration split falls back to a row-level
+80/20 split (instead of a flight-disjoint one) when a fold's training data comes from
+only one flight -- a real edge case hit by this ADR's own CLI integration test with a
+2-flight demo run under `cv.scheme: loso`, where a flight-grouped split would empty the
+fit set entirely.
+**Consequences:** Running every horizon, every CV scheme, Task C, and nested
+hyper-parameter search (FR-PRD-004/008) is left to the `predict/` library directly
+(notebooks or ad-hoc scripts), which is unit-tested module-by-module
+(`tests/unit/test_datasets.py`, `test_models.py`, `test_tasks.py`, `test_cv.py`, etc.)
+independently of CLI wiring; a later phase can widen the CLI's sweep if a report or
+dashboard needs it directly from a `fsa predict` run.
