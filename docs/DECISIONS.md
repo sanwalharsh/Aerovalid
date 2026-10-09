@@ -461,3 +461,57 @@ multi-minute, not instant -- expected for a benchmark command (unlike every othe
 S1-S9 validation at production scale (the config's real `n_flights`/`sobol.n`/full
 seed list) remains something a user runs deliberately, not something any automated
 test invokes at that scale.
+
+## ADR-022: `fsa ingest` writes into `raw/`, not a dead-end `ingested/` directory
+
+**Context:** PRD §6's journey J-B ("study on own data") is: map an external telemetry
+log plus an external simulation variant's output via `fsa ingest`, then run
+`fsa preprocess`/`validate`/... unmodified. Auditing this while writing Phase 9's
+USER_GUIDE found that `fsa ingest` wrote its converted output to
+`runs/<id>/ingested/<source_file_stem>.parquet` -- a location nothing downstream ever
+reads. `fsa preprocess` only ever globs `raw/telemetry/*.parquet` and
+`raw/variants/<name>/*.parquet` (exactly what `fsa generate` produces), so every
+ingested file was a dead end: J-B never actually worked, in any phase, until now.
+**Decision:** `fsa ingest` now writes directly into that same `raw/` layout --
+`raw/telemetry/<flight_id>.parquet` when the mapping's `source` is `"tel"`, otherwise
+`raw/variants/<source>/<flight_id>.parquet` -- named by each row's own `flight_id`
+(from the mapping, or the source file's stem if unset) rather than the source
+filename. A real-data study now calls `fsa ingest` once per source -- the telemetry
+mapping, then once more per simulation variant, each tagged with that variant's name
+-- before running `fsa preprocess` onward exactly as `fsa generate`'s output would.
+`docs/USER_GUIDE.md` and `tests/fixtures/external_demo/` (a synthetic 60 s, 10 Hz
+telemetry + one variant, both derived from the same signal so residuals are small but
+non-zero) now demonstrate and test this end to end
+(`test_ingest_then_preprocess_then_validate_works_on_real_data_style_study`).
+**Consequences:** `identify`'s output-error fitting still needs recorded controls
+(`throttle`/`alpha_cmd_rad`/`bank_cmd_rad`) that a real log may not have exported;
+an ingested study can run `validate`/`analyze`/`predict`/`detect` fully but `identify`
+only if the mapping also supplies those columns -- an honest, not a fabricated,
+limitation of real-data studies versus synthetic ones.
+
+## ADR-023: `fsa predict`'s `cv.scheme: loso` is capped at `cv.folds`
+
+**Context:** Phase 9's NFR-PERF-001 performance profile (`docs/07_nfr_risks_
+governance.md` §6) timed a full `fsa run-all` at `configs/default.yaml`'s own scale
+(12 flights, 6 variants) end to end: ~76 minutes total, of which `predict` alone was
+~68 minutes -- nearly two orders of magnitude over every other step. Root cause:
+`predict.cv.scheme: loso` (the config default) ran true leave-one-flight-out, i.e.
+one cross-validation fold *per flight*, for every `(variant, target signal, model)`
+combination (`6 x 2 x 3 = 36` combinations here) -- `432` individual model fits before
+even refitting the selected best model. The fold count (and so the fit count) scales
+linearly with the number of flights in a study, with no bound.
+**Decision:** `cli.py::_predict_splits` now runs true `loso` only when the study has
+at most `predict.cv.folds` (default 6) flights; above that, it falls back to grouped
+K-fold with exactly `folds` folds -- still flight-disjoint (no leakage), just with a
+fold count that no longer grows with the study's size. This is a CLI-level choice
+(the `predict/datasets.py` library functions `leave_one_flight_out`/`grouped_kfold`
+are both unchanged and still directly usable for true LOSO from a script).
+**Consequences:** measured on the same full-scale run, this cut `predict`'s wall
+time from ~68 min to ~28 min (>2x) -- a real, verified improvement, not an estimate.
+It does **not** bring the full default-scale demo under NFR-PERF-001's 5-minute
+target (~36 min total remains); closing that gap needs either a smaller default demo
+scale, parallelising `predict`'s independent `(variant, target, model)` combinations
+(`joblib.Parallel`, matching `telemetry/generator.py`'s existing pattern), or a
+lighter default model zoo for the "demo" profile -- each a larger, separately-scoped
+change than this phase made, documented honestly in `docs/07_nfr_risks_governance.md`
+§6 rather than silently claimed as met.

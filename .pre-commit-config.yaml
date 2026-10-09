@@ -6,13 +6,19 @@ repos:
         args: [--fix]
       - id: ruff-format
 
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.11.2
+  - repo: local
     hooks:
       - id: mypy
-        additional_dependencies: [pydantic>=2.6]
+        name: mypy
+        entry: .venv/bin/mypy
+        language: system
         args: [--strict, src]
         pass_filenames: false
+        # Runs via the project's own .venv (language: system), not pre-commit's
+        # isolated hook env: mypy --strict needs the real numpy/pandas/pydantic/etc.
+        # installed, not just the ignore_missing_imports list in pyproject.toml's
+        # [[tool.mypy.overrides]] -- replicating that in `additional_dependencies`
+        # would mean installing nearly the whole main dependency list twice.
 
   - repo: https://github.com/kynan/nbstripout
     rev: 0.7.1

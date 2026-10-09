@@ -105,8 +105,21 @@ make demo        # fsa run-all on the demo profile
 make dashboard   # streamlit run src/aerovalid/app/main.py directly
 ```
 
+## Docker
+
+```bash
+docker build -t aerovalid .
+docker run -v "$PWD/runs:/app/runs" aerovalid run-all --config configs/default.yaml --run-id demo
+```
+
+Builds a lean image with the core pipeline (optional `torch`/`lightgbm`/`shap`/
+`pymavlink`/`pyulog` extras aren't included; every module that needs them degrades
+gracefully without them). Bind-mount `runs/` (and `data/`/`reports/` if you use them)
+so output persists outside the container.
+
 ## More
 
+- `docs/USER_GUIDE.md` — running the pipeline on your own (real) flight data.
 - `docs/00_vision.md` — research questions and the S1-S9 success criteria.
 - `docs/02_FRD.md` — functional requirements.
 - `docs/03_architecture_and_data_spec.md` — module layout and on-disk artifact schema.

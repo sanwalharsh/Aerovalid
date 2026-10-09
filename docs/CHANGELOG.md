@@ -325,3 +325,53 @@ with no runs and with a demo run, asserting no exception (`test_dashboard.py`);
 `fsa run-all` produces every phase's artifact end-to-end (`@pytest.mark.slow` CLI
 test); `fsa benchmark` writes a verdict (pass/fail/not-evaluated) for all of
 S1-S9 (`@pytest.mark.slow` CLI test, one seed). `make lint test` green.
+
+## Phase 9 — Hardening & Release
+
+- Rewrote `README.md` with the quick-start, CLI command table, and config pointer it
+  had promised since Phase 0; added `docs/USER_GUIDE.md` walking through the J-B
+  ("study on own data") journey end to end.
+- **Found and fixed a real, previously-dead user journey:** `fsa ingest` wrote
+  converted external data to `runs/<id>/ingested/`, a location nothing downstream
+  ever read -- `fsa preprocess` only globs `raw/telemetry/`/`raw/variants/<name>/`.
+  J-B never actually worked, in any phase, until now. `fsa ingest` now writes
+  directly into that `raw/` layout, named by each row's own `flight_id`; added
+  `tests/fixtures/external_demo/` (a synthetic telemetry + one variant's output) and
+  an end-to-end test proving ingest -> preprocess -> validate now works on external
+  data (ADR-022).
+- Added a `Dockerfile` (lean image, core deps only, non-root user) and
+  `.dockerignore`; fixed `.pre-commit-config.yaml`'s mypy hook to run via the
+  project's own `.venv` (`language: system`) instead of pre-commit's isolated hook
+  env, which had no way to resolve numpy/pandas/pydantic/etc.; added a `demo-smoke`
+  CI job (FR-OPS-003) running a reduced-scale `fsa run-all` and checking for `NaN` in
+  `summary.json`.
+- **Measured NFR-PERF-001/002 against a real full-scale run** (12 flights, 6
+  variants -- `configs/default.yaml`'s own scale), rather than assuming they held:
+  the demo took ~76 minutes end to end, not the targeted < 5; `predict` alone was
+  ~68 minutes because `cv.scheme: loso`'s fold count (and so its model-fit count)
+  scaled linearly with the number of flights in the study (432 fits at this scale).
+  Capped `loso` at `predict.cv.folds` (falling back to grouped K-fold above that),
+  cutting `predict` to ~28 minutes (>2x, verified by re-measuring) -- real progress,
+  but the full default-scale demo still doesn't meet the 5-minute target; NFR-PERF-002
+  is extrapolated from measured `preprocess` throughput to also miss its target.
+  Both gaps, their root causes, and concrete un-taken next steps (parallelising
+  `predict` across its independent `(variant, target, model)` combinations, the same
+  way `generate` already parallelises across flights) are documented honestly in
+  `docs/07_nfr_risks_governance.md` §6 and ADR-023 -- not silently claimed as met.
+- The same full-scale run surfaced a real crash in `fsa report`: `ranking_forest_plot`
+  raised `ValueError: 'xerr' must not contain negative values` because a bootstrap CI
+  bound can land on the "wrong" side of the point estimate with real data (not just
+  contrived synthetic data) -- fixed by clipping error-bar magnitudes to non-negative
+  in both `ranking_forest_plot` and `parameter_ci_plot`, with a regression test built
+  from the exact shape of data that triggered it.
+
+DoD: `make lint test` green (coverage has stayed at 93%+ since Phase 8); every new
+fix has a regression test (`test_predict_splits_caps_loso_at_configured_folds`,
+`test_ranking_forest_plot_tolerates_a_ci_bound_crossing_the_point_estimate`,
+`test_ingest_then_preprocess_then_validate_works_on_real_data_style_study`); the
+CI workflow (`.github/workflows/ci.yml`) covers lint/type-check/test/coverage-gate,
+a Linux demo-smoke job, and a macOS/Windows fast-test smoke matrix; README quick-start
+commands verified to actually work from this checkout. PRD §9's acceptance criteria
+are met where achievable at this project's current scope and honestly documented as
+gaps (with root cause and a concrete path forward) where not -- per CLAUDE.md §2,
+nothing here is claimed to pass that wasn't actually measured passing.

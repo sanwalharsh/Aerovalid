@@ -242,16 +242,28 @@ def ingest(
     column_mapping = ColumnMapping.model_validate(mapping_raw)
     adapter = CsvParquetAdapter()
 
-    ingested_dir = run_dir / "ingested"
-    ingested_dir.mkdir(parents=True, exist_ok=True)
+    # Written straight into the same raw/telemetry or raw/variants/<name> layout
+    # `fsa generate` produces, so `fsa preprocess` can consume ingested external data
+    # with no further wiring -- call `fsa ingest` once per source (telemetry, then
+    # once more per simulation variant, each with its own mapping's `source` field)
+    # before running the rest of the pipeline (docs/USER_GUIDE.md).
+    dest_dir = (
+        run_dir / "raw" / "telemetry"
+        if column_mapping.source == "tel"
+        else run_dir / "raw" / "variants" / column_mapping.source
+    )
+    dest_dir.mkdir(parents=True, exist_ok=True)
 
     source_files = sorted(p for p in Path(source).iterdir() if p.suffix in (".csv", ".parquet"))
     for source_file in source_files:
         canonical = adapter.read(source_file, column_mapping)
-        canonical.to_parquet(ingested_dir / f"{source_file.stem}.parquet", index=False)
-        logger.info("ingest: %s -> %d rows", source_file.name, len(canonical))
+        flight_id = str(canonical["flight_id"].iloc[0])
+        canonical.to_parquet(dest_dir / f"{flight_id}.parquet", index=False)
+        logger.info(
+            "ingest: %s -> %d rows (flight_id=%s)", source_file.name, len(canonical), flight_id
+        )
 
-    logger.info("ingest: wrote %d file(s) to %s", len(source_files), ingested_dir)
+    logger.info("ingest: wrote %d file(s) to %s", len(source_files), dest_dir)
 
 
 @app.command()
@@ -561,9 +573,18 @@ def _predict_resolve_model_names(configured: list[str], seq: bool) -> list[str]:
 def _predict_splits(
     scheme: str, folds: int, flight_id: np.ndarray
 ) -> list[tuple[np.ndarray, np.ndarray]]:
+    """`scheme == "loso"` is true leave-one-flight-out, capped at `folds` folds: a
+    full-scale study's fold count (and so its model-fit count) would otherwise grow
+    linearly with the number of flights, which is what made a 12-flight/6-variant/
+    3-model demo run's `fsa predict` step take over an hour in practice, not the
+    few seconds the other steps take at that scale (measured while writing Phase 9's
+    NFR-PERF-001 profile -- see DECISIONS.md ADR-023). Above the cap, this falls
+    back to grouped K-fold (still flight-disjoint, so no leakage) with exactly
+    `folds` folds, keeping the fold count -- and so the dominant cost -- bounded
+    regardless of how many flights a study has."""
     from aerovalid.predict.datasets import grouped_kfold, leave_one_flight_out
 
-    if scheme == "loso":
+    if scheme == "loso" and len(set(flight_id)) <= folds:
         return list(leave_one_flight_out(flight_id))
     return list(grouped_kfold(flight_id, n_splits=folds))
 

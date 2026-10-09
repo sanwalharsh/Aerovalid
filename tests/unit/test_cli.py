@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 from typer.testing import CliRunner
 
-from aerovalid.cli import app
+from aerovalid.cli import _predict_splits, app
 from aerovalid.core.errors import ConfigError
 
 runner = CliRunner()
@@ -44,6 +45,35 @@ def test_preprocess_without_run_id_raises_config_error() -> None:
         runner.invoke(app, ["preprocess"], catch_exceptions=False)
 
 
+@pytest.mark.req("FR-PRD-001")
+def test_predict_splits_uses_true_loso_within_the_fold_cap() -> None:
+    flight_id = np.array(["F1", "F1", "F2", "F2", "F3", "F3"])
+    splits = _predict_splits("loso", folds=6, flight_id=flight_id)
+    assert len(splits) == 3  # one fold per flight: true leave-one-flight-out
+    for _, test_idx in splits:
+        assert len(set(flight_id[test_idx])) == 1
+
+
+@pytest.mark.req("FR-PRD-001")
+def test_predict_splits_caps_loso_at_configured_folds() -> None:
+    """More flights than `folds`: falls back to grouped K-fold with exactly `folds`
+    folds rather than one per flight (ADR-023 -- this is what kept a 12-flight study's
+    `fsa predict` step from scaling its fold count, and so its runtime, with the
+    flight count)."""
+    flight_id = np.array([f"F{i}" for i in range(10) for _ in range(3)])
+    splits = _predict_splits("loso", folds=6, flight_id=flight_id)
+    assert len(splits) == 6
+    for train_idx, test_idx in splits:
+        assert set(flight_id[train_idx]).isdisjoint(set(flight_id[test_idx]))
+
+
+@pytest.mark.req("FR-PRD-001")
+def test_predict_splits_grouped_kfold_scheme_ignores_the_loso_cap() -> None:
+    flight_id = np.array(["F1", "F1", "F2", "F2", "F3", "F3"])
+    splits = _predict_splits("grouped_kfold", folds=2, flight_id=flight_id)
+    assert len(splits) == 2
+
+
 @pytest.mark.req("FR-TEL-005")
 def test_ingest_cli_converts_fixture_csv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
@@ -62,8 +92,55 @@ def test_ingest_cli_converts_fixture_csv(tmp_path: Path, monkeypatch: pytest.Mon
         catch_exceptions=False,
     )
     assert result.exit_code == 0
-    ingested = tmp_path / "runs" / "clitest" / "ingested" / "sample_external_flight.parquet"
+    ingested = tmp_path / "runs" / "clitest" / "raw" / "telemetry" / "F_EXTERNAL_0001.parquet"
     assert ingested.exists()
+
+
+@pytest.mark.req("FR-TEL-005")
+def test_ingest_then_preprocess_then_validate_works_on_real_data_style_study(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The J-B user journey (PRD §6): ingest external telemetry plus one external
+    simulation variant's output, then run the rest of the pipeline unmodified."""
+    monkeypatch.chdir(tmp_path)
+    config = _REPO_ROOT / "configs" / "default.yaml"
+    fixtures = _REPO_ROOT / "tests" / "fixtures" / "external_demo"
+
+    telemetry_args = [
+        "ingest",
+        "--run-id",
+        "clitest",
+        "--source",
+        str(fixtures / "telemetry"),
+        "--mapping",
+        str(fixtures / "telemetry_mapping.yaml"),
+    ]
+    assert runner.invoke(app, telemetry_args, catch_exceptions=False).exit_code == 0
+
+    variant_args = [
+        "ingest",
+        "--run-id",
+        "clitest",
+        "--source",
+        str(fixtures / "variant_v0"),
+        "--mapping",
+        str(fixtures / "variant_v0_mapping.yaml"),
+    ]
+    assert runner.invoke(app, variant_args, catch_exceptions=False).exit_code == 0
+
+    run_dir = tmp_path / "runs" / "clitest"
+    assert (run_dir / "raw" / "telemetry" / "F_EXT_0001.parquet").exists()
+    assert (run_dir / "raw" / "variants" / "V0" / "F_EXT_0001.parquet").exists()
+
+    preprocess_args = ["preprocess", "--config", str(config), "--run-id", "clitest"]
+    assert runner.invoke(app, preprocess_args, catch_exceptions=False).exit_code == 0
+    assert (run_dir / "aligned" / "V0" / "F_EXT_0001.parquet").exists()
+
+    validate_args = ["validate", "--config", str(config), "--run-id", "clitest"]
+    result = runner.invoke(app, validate_args, catch_exceptions=False)
+    assert result.exit_code == 0
+    metrics = pd.read_parquet(run_dir / "validation" / "metrics_signal.parquet")
+    assert "V0" in set(metrics["variant"])
 
 
 @pytest.mark.slow

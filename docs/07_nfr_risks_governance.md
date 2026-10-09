@@ -47,3 +47,69 @@ Every pull request into `main` must confirm:
 ## 5. Out of scope (non-goals, restated from `01_PRD.md`)
 
 Real-time streaming; certified V&V claims; CFD; full nonlinear 6-DoF truth modelling beyond the documented truth model; multi-vehicle swarms; any classified/export-controlled data or weapon modelling (`01_PRD.md §`, `00_vision.md` NG3).
+
+## 6. Phase 9 performance profile (measured, not estimated)
+
+A full `fsa run-all` at `configs/default.yaml`'s own scale (12 flights, 4 scenario
+types, 6 variants) was timed end to end on this development machine. **NFR-PERF-001
+(< 5 min) is not met at this scale** -- the measured total was roughly **76 minutes**
+before the fix described below, and roughly **36 minutes** after it. Per-step
+breakdown (from `run_manifest.json`/log timestamps of the actual run):
+
+| Step | Time (before) | Time (after `_predict_splits` fold cap) |
+|---|---|---|
+| `generate` | ~6 min 18 s | unchanged |
+| `preprocess` | 80 s (12 flights) | unchanged |
+| `validate` | 4 s | unchanged |
+| `analyze` | 2 s | unchanged |
+| `predict` | **68 min 4 s** | **28 min 11 s** |
+| `detect` | 26 s | unchanged |
+| `identify` | 29 s | unchanged |
+| `report` | crashed (see below), ~2 s once fixed | ~2 s |
+| **Total** | **~76 min** | **~36 min** |
+
+`predict` dominates by nearly two orders of magnitude over every other step, for a
+structural reason, not a one-off slowdown: with `predict.cv.scheme: loso` (the
+config default), every `(variant, target signal, model)` combination -- `6 variants x
+2 targets x 3 models = 36` combinations at this scale -- was cross-validated with
+one fold *per flight* (12 folds), i.e. `432` individual model fits, before the model
+selected as best was even refit and scored. The fold count scaled linearly with the
+number of flights in the study, so it will only get worse as a study grows. Capping
+`loso` at `predict.cv.folds` (default 6) folds -- falling back to grouped K-fold,
+still flight-disjoint, once the flight count exceeds that -- cut the fold count (and
+so the fit count) by 2x at this scale, for the measured >2x wall-clock improvement
+above; see `docs/DECISIONS.md` ADR-023.
+
+**This does not bring the full default-scale demo under the 5-minute target.**
+Reaching that would need either (a) a smaller default "demo" scale than
+`configs/default.yaml`'s current `generate.n_flights: 12` x `variants: 6`, (b)
+parallelising `predict`'s per-`(variant, target, model)` loop (each combination is
+independent -- the same `joblib.Parallel` pattern `telemetry/generator.py` already
+uses across flights would apply directly), or (c) reducing the default model zoo
+(e.g. dropping `rf`/`hgb` to just `ridge` for the "demo" profile specifically).
+None of these were done in Phase 9: (a)/(c) would change what every other phase's
+tests and this repo's own demo narrative have exercised throughout the build, and
+(b) is a real, scoped follow-up rather than a quick fix. The CI `demo-smoke` job
+(`.github/workflows/ci.yml`) and this session's own CLI integration tests
+accordingly use a reduced flight/variant count (2-6, well under the fold cap), which
+*does* complete in well under 5 minutes -- consistent with `fsa run-all` itself
+being fast; it's specifically the full-scale default config that overruns the target.
+
+**NFR-PERF-002** (100 flights x 10 Hz x 1 h in < 30 min) is extrapolated, not
+measured at that literal scale (that would take many hours to actually run): the
+measured `preprocess` throughput above is 80 s for 12 flights of ~300 s each, i.e.
+~6.7 s per 5-minute flight. Scaling linearly to 1-hour flights (~80 s/flight) and to
+100 such flights gives **~133 minutes**, also over target -- `preprocess()` runs its
+per-flight loop sequentially (no `joblib.Parallel`, unlike `generate()`); the same
+parallelisation note as above applies.
+
+**Other findings from this full-scale run** (both already fixed, with regression
+tests, before this document was written): `report/figures.py`'s `ranking_forest_plot`
+raised `ValueError: 'xerr' must not contain negative values` because a bootstrap CI
+bound can land on the "wrong" side of the point estimate with real data (now clipped
+to non-negative -- `test_ranking_forest_plot_tolerates_a_ci_bound_crossing_the_point_estimate`);
+`predict/models/ridge.py`'s `RidgeModel` logged (non-fatal) `LinAlgWarning:
+ill-conditioned matrix` on several `(variant, target)` combinations, consistent with
+some lag-feature columns having little variance within a short fitting window --
+noted here as a known characteristic, not fixed, since Ridge's L2 term still
+produces a usable (if less precise) fit and nothing downstream failed because of it.

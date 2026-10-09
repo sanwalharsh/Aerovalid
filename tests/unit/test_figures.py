@@ -71,6 +71,18 @@ def test_ranking_forest_plot() -> None:
 
 
 @pytest.mark.req("FR-RPT-002")
+def test_ranking_forest_plot_tolerates_a_ci_bound_crossing_the_point_estimate() -> None:
+    """Bootstrap CI bounds are empirical quantiles, not derived from `mean_rank`
+    itself, so one can land on the "wrong" side of it with few resamples or ties --
+    a real case hit on a full-scale demo run, not a synthetic edge case."""
+    variants = ["V0", "V1"]
+    mean_rank = np.array([1.0, 2.0])
+    ci_low = np.array([1.2, 1.5])  # ci_low > mean_rank for V0: a naive diff is negative
+    ci_high = np.array([1.8, 2.5])
+    _assert_is_figure(figures.ranking_forest_plot(variants, mean_rank, ci_low, ci_high))
+
+
+@pytest.mark.req("FR-RPT-002")
 def test_calibration_plot() -> None:
     nominal = np.array([0.5, 0.8, 0.9])
     empirical = np.array([0.48, 0.82, 0.88])

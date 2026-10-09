@@ -61,9 +61,9 @@ DoD: non-identifiable case flagged (`test_identify_jacobian.py`'s collinear-para
 - [x] `fsa report`, `fsa dashboard`, `fsa run-all`, `fsa benchmark` (reduced scope -- see DECISIONS.md ADR-021).
 DoD: demo report has all sections populated (`test_builder.py`'s full-fixture test shows zero "no data" placeholders in the populated sections; the empty-fixture test confirms graceful degradation instead of a crash); dashboard loads a demo run without error (`streamlit.testing.v1.AppTest`, `test_dashboard.py`); `fsa benchmark` writes a pass/fail/not-evaluated verdict for every S1-S9 criterion, never a fabricated one for S3/S9. Found and fixed a real bug: calling a Typer command function directly leaves omitted parameters defaulting to `typer.models.OptionInfo` sentinels, not their CLI defaults (ADR-021). (FR-RPT-001…004, 006, FR-OPS-002, 004; FR-RPT-005 PDF export deferred)
 
-## Phase 9 — Hardening & release  `[ ]`
-- [ ] Coverage ≥ 85%, mypy strict clean, docs complete (README quick-start, CONFIG_REFERENCE, METHODS, USER_GUIDE for real-data mapping), Dockerfile, performance profiling vs NFR targets, example real-data mapping, tag v1.0.0.
-DoD: PRD §9 acceptance criteria all met.
+## Phase 9 — Hardening & release  `[x]`
+- [x] Coverage ≥ 85% (93%+ throughout), mypy strict clean, docs complete (README quick-start, CONFIG_REFERENCE, METHODS = `05_analysis_methods.md`, `USER_GUIDE.md` for real-data mapping), Dockerfile, performance profiling vs NFR targets (measured, documented in `07_nfr_risks_governance.md` §6 -- NFR-PERF-001/002 not met at full default scale; root-caused and partially fixed, see ADR-023), example real-data mapping (`tests/fixtures/external_demo/`, exercised by a real CLI test), tag v1.0.0.
+DoD: PRD §9 acceptance criteria -- (1) Must FRs pass their tests; (2) S1-S9 computed (not all pass at demo scale, honestly reported, not fabricated -- see `fsa benchmark` and ADR-021); (3) `make lint test` green, CI workflow covers lint/type-check/test/coverage/demo-smoke-on-Linux/smoke-matrix-on-macOS-Windows; (4) README quick-start verified to work; (5) demo report has every section populated with zero placeholder text, verified on both a small fixture and a full-scale 12-flight/6-variant real run (which also surfaced and fixed a genuine `ValueError` in the ranking-forest figure). A real, previously-dead J-B ("study on own data") user journey was found and fixed in this phase: `fsa ingest` wrote to a location nothing downstream read -- see ADR-022.
 
 ---
 

@@ -102,11 +102,17 @@ def ranking_forest_plot(
     rank_ci_low: NDArray[np.float64],
     rank_ci_high: NDArray[np.float64],
 ) -> Figure:
-    """Variant ranking forest plot: mean rank with bootstrap CIs (FR-RPT-002)."""
+    """Variant ranking forest plot: mean rank with bootstrap CIs (FR-RPT-002).
+
+    `rank_ci_low`/`rank_ci_high` are empirical bootstrap quantiles, not derived from
+    `mean_rank` itself, so a CI bound can fall on the "wrong" side of the point
+    estimate with few resamples or many ties; error magnitudes are clipped to
+    non-negative (`matplotlib.errorbar` rejects negative `xerr`/`yerr` outright).
+    """
     fig, ax = _new_figure((6.0, max(2.5, 0.5 * len(variants))))
     y = np.arange(len(variants))
-    lower_err = mean_rank - rank_ci_low
-    upper_err = rank_ci_high - mean_rank
+    lower_err = np.clip(mean_rank - rank_ci_low, 0.0, None)
+    upper_err = np.clip(rank_ci_high - mean_rank, 0.0, None)
     ax.errorbar(mean_rank, y, xerr=[lower_err, upper_err], fmt="o", capsize=3)
     ax.set_yticks(y, labels=variants)
     ax.invert_yaxis()
@@ -181,11 +187,16 @@ def parameter_ci_plot(
     fitted_values: NDArray[np.float64],
     ci_95: dict[str, tuple[float, float]],
 ) -> Figure:
-    """Fitted parameter point estimates with 95% Wald CIs (FR-RPT-002)."""
+    """Fitted parameter point estimates with 95% Wald CIs (FR-RPT-002). Error
+    magnitudes are clipped to non-negative, as in `ranking_forest_plot`."""
     fig, ax = _new_figure((6.0, max(2.5, 0.5 * len(param_names))))
     y = np.arange(len(param_names))
-    lower = np.array([fitted_values[i] - ci_95[name][0] for i, name in enumerate(param_names)])
-    upper = np.array([ci_95[name][1] - fitted_values[i] for i, name in enumerate(param_names)])
+    lower = np.clip(
+        [fitted_values[i] - ci_95[name][0] for i, name in enumerate(param_names)], 0.0, None
+    )
+    upper = np.clip(
+        [ci_95[name][1] - fitted_values[i] for i, name in enumerate(param_names)], 0.0, None
+    )
     ax.errorbar(fitted_values, y, xerr=[lower, upper], fmt="o", capsize=3)
     ax.set_yticks(y, labels=param_names)
     ax.invert_yaxis()

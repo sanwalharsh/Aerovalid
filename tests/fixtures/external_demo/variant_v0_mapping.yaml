@@ -1,0 +1,16 @@
+# Example simulation-variant column mapping, same external log format as
+# telemetry_mapping.yaml but tagged `source: V0` so it lines up with that flight's
+# telemetry by `flight_id` (USER_GUIDE.md).
+time_column: time_ms
+time_unit: ms
+flight_id: F_EXT_0001
+source: V0
+columns:
+  alt_m: altitude_ft
+  vel_air_mps: airspeed_kts
+  pitch_rad: pitch_deg
+  roll_rad: roll_deg
+angle_columns_in_degrees: [pitch_rad, roll_rad]
+unit_conversions:
+  alt_m: 0.3048
+  vel_air_mps: 0.5144444
