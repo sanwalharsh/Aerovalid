@@ -38,7 +38,7 @@ def test_help_lists_all_commands() -> None:
 
 
 @pytest.mark.req("FR-OPS-001")
-@pytest.mark.parametrize("command", ["detect", "identify", "report"])
+@pytest.mark.parametrize("command", ["identify", "report"])
 def test_unimplemented_commands_raise_not_implemented(command: str) -> None:
     with pytest.raises(NotImplementedError):
         runner.invoke(app, [command], catch_exceptions=False)
@@ -249,3 +249,57 @@ def test_predict_cli_produces_cv_results_and_models(
 
     manifest = json.loads((run_dir / "run_manifest.json").read_text())
     assert manifest["steps"]["predict"]["status"] == "completed"
+
+
+@pytest.mark.slow
+@pytest.mark.req("FR-DET-001")
+def test_detect_cli_produces_calibrated_alarms_and_metrics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config = _REPO_ROOT / "configs" / "default.yaml"
+    generate_args = [
+        "generate",
+        "--config",
+        str(config),
+        "--run-id",
+        "clitest",
+        "--set",
+        "generate.n_flights=6",
+        "--set",
+        "generate.scenarios=[doublet_series]",
+        "--set",
+        "variants=[V0]",
+    ]
+    assert runner.invoke(app, generate_args, catch_exceptions=False).exit_code == 0
+
+    preprocess_args = ["preprocess", "--config", str(config), "--run-id", "clitest"]
+    assert runner.invoke(app, preprocess_args, catch_exceptions=False).exit_code == 0
+
+    detect_args = ["detect", "--config", str(config), "--run-id", "clitest"]
+    result = runner.invoke(app, detect_args, catch_exceptions=False)
+    assert result.exit_code == 0
+
+    run_dir = tmp_path / "runs" / "clitest"
+    detect_dir = run_dir / "detect"
+    assert (detect_dir / "baselines.json").exists()
+    assert (detect_dir / "alarms.parquet").exists()
+    assert (detect_dir / "detection_metrics.parquet").exists()
+    assert (detect_dir / "roc.parquet").exists()
+
+    faults = json.loads((run_dir / "raw" / "meta" / "faults.json").read_text())
+    n_faulty = sum(1 for events in faults.values() if events)
+    assert n_faulty >= 1  # this fixture's fixed seed samples at least one fault
+
+    alarms = pd.read_parquet(detect_dir / "alarms.parquet")
+    assert set(alarms["variant"]) == {"V0"}
+    assert {"zscore", "ewma", "cusum", "mahalanobis"} <= set(alarms["detector"])
+    assert alarms["is_fault"].sum() == n_faulty * len(set(alarms["detector"]))
+
+    metrics = pd.read_parquet(detect_dir / "detection_metrics.parquet")
+    overall = metrics[metrics["fault_type"].isna()]
+    assert overall["recall"].between(0.0, 1.0).all()
+    assert (overall["far_per_hour"] >= 0.0).all()
+
+    manifest = json.loads((run_dir / "run_manifest.json").read_text())
+    assert manifest["steps"]["detect"]["status"] == "completed"

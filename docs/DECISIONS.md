@@ -315,3 +315,40 @@ hyper-parameter search (FR-PRD-004/008) is left to the `predict/` library direct
 (`tests/unit/test_datasets.py`, `test_models.py`, `test_tasks.py`, `test_cv.py`, etc.)
 independently of CLI wiring; a later phase can widen the CLI's sweep if a report or
 dashboard needs it directly from a `fsa predict` run.
+
+## ADR-018: `fsa detect`'s CLI scope, the combined max|z| stream, and the warm-up trim
+
+**Context:** FR-DET-001...008 spans robust baselines, five statistical detectors
+(z-score/EWMA/CUSUM/Page-Hinkley/Mahalanobis), an ML detector (Isolation Forest),
+change-point onset estimation (PELT), and a predictive early-warning detector built on
+`predict/`'s Task-A/C models -- each with its own calibration and evaluation concerns.
+Following ADR-015/017's precedent, the CLI covers a representative, tractable subset
+and the rest stays library-only (fully implemented, unit-tested module-by-module:
+`test_detect_baseline.py`, `test_detect_statistical.py`, `test_detect_ml.py`,
+`test_detect_changepoint.py`, `test_detect_calibration.py`, `test_detect_early_warning.py`,
+`test_detect_evaluation.py`).
+**Decision:** `fsa detect` runs the FAR-calibrated statistical detectors
+(z-score/EWMA/CUSUM/Page-Hinkley, whichever are in `detect.detectors`) plus Mahalanobis
+(analytic chi-squared threshold, not FAR-calibrated) on a single **combined** stream
+per flight -- `max_s |z_s|` across every configured signal for the univariate
+detectors, the full whitened vector for Mahalanobis -- rather than one detector
+instance per individual signal. This matches the z-score detector's own spec
+definition (`max_s |z_s| > h`) rather than reducing it; applying the same combination
+to EWMA/CUSUM/Page-Hinkley/Mahalanobis is this ADR's extension of that idea for
+consistency across detectors. Isolation Forest (FR-DET-003), PELT onset estimation
+(FR-DET-004), and predictive early warning (FR-DET-005, which needs a fitted
+`fsa predict` model as an input) are not wired into the CLI.
+While validating this against a small demo run, every flight -- nominal and faulty
+alike -- showed a large, consistent residual spike in the first ~1-2 s (initial
+sim-vs-telemetry state mismatch before the controller settles into trim), which blew
+through every detector except z-score's 5-consecutive-sample debounce. `fsa detect`
+therefore discards each flight's first `_DETECT_WARMUP_S = 2.0` s before fitting the
+baseline or scoring any detector -- standard practice in monitoring systems, not a
+result-shaping hack (CLAUDE.md §2's "don't invent results" is about report
+conclusions, not about excluding a known, physically-explained startup transient from
+health monitoring).
+**Consequences:** small demo runs (few nominal flights, short scenarios) may still not
+hit the S6 recall/FAR/delay targets -- those remain a benchmark-level claim deferred to
+Phase 8/9's `fsa benchmark` (ADR-015's precedent), not an expectation for every ad-hoc
+`fsa detect` invocation. The CLI integration test therefore asserts artifact structure
+and value ranges, not specific recall/precision numbers, on its small fixture run.

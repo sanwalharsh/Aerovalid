@@ -30,6 +30,7 @@ from aerovalid.core.manifest import (
     update_step,
     write_manifest,
 )
+from aerovalid.detect.evaluation import DetectionMetrics, FlightRecord
 from aerovalid.predict.cv import CVResult
 from aerovalid.predict.datasets import WindowedDataset
 from aerovalid.predict.models import ResidualModel
@@ -373,6 +374,11 @@ def _load_variant_aligned(run_dir: Path, variant: str, flights: list[str]) -> pd
         if (run_dir / "aligned" / variant / f"{flight_id}.parquet").exists()
     ]
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def _load_flight_aligned(run_dir: Path, variant: str, flight_id: str) -> pd.DataFrame:
+    path = run_dir / "aligned" / variant / f"{flight_id}.parquet"
+    return pd.read_parquet(path) if path.exists() else pd.DataFrame()
 
 
 @app.command()
@@ -814,10 +820,362 @@ def predict(config: Path = _CONFIG_OPTION, run_id: str | None = _RUN_ID_OPTION) 
     logger.info("predict: wrote %d cv result rows to %s", len(cv_rows), predict_dir)
 
 
+def _detect_load_faults(run_dir: Path) -> dict[str, list[dict[str, object]]]:
+    path = run_dir / "raw" / "meta" / "faults.json"
+    if not path.exists():
+        raise ConfigError(f"No raw/meta/faults.json found at {run_dir}; run `fsa generate` first.")
+    data: dict[str, list[dict[str, object]]] = json.loads(path.read_text())
+    return data
+
+
+def _detect_fault_window_labels(
+    t_s: np.ndarray, fault_events: list[dict[str, object]]
+) -> np.ndarray:
+    labels = np.zeros(len(t_s), dtype=bool)
+    for event in fault_events:
+        on, off = float(event["t_on_s"]), float(event["t_off_s"])  # type: ignore[arg-type]
+        labels |= (t_s >= on) & (t_s <= off)
+    return labels
+
+
+def _detect_exceedance_time(
+    df: pd.DataFrame, signals: list[str], tolerances: dict[str, float]
+) -> float | None:
+    from aerovalid.validate.tolerance import time_to_first_exceedance
+
+    t_s = df["t_s"].to_numpy(dtype=np.float64)
+    candidates = []
+    for signal in signals:
+        res_col = f"res_{signal}"
+        if res_col not in df.columns or signal not in tolerances:
+            continue
+        t_exc = time_to_first_exceedance(
+            t_s, df[res_col].to_numpy(dtype=np.float64), tolerances[signal]
+        )
+        if t_exc is not None:
+            candidates.append(t_exc)
+    return min(candidates) if candidates else None
+
+
+_DETECT_WARMUP_S = 2.0  # discard this much post-takeoff settling transient (ADR-018)
+
+_DETECTOR_SEARCH_RANGE: dict[str, tuple[float, float]] = {
+    "zscore": (1.0, 8.0),
+    "ewma": (1.0, 6.0),
+    "cusum": (1.0, 15.0),
+    "page_hinkley": (2.0, 30.0),
+}
+
+
+def _detect_run_univariate(
+    name: str,
+    streams: dict[str, np.ndarray],
+    t_s_by_flight: dict[str, np.ndarray],
+    nominal_ids: list[str],
+    duration_by_flight: dict[str, float],
+    target_far_per_hour: float,
+) -> dict[str, float | None]:
+    """Calibrate `name`'s single threshold knob to `target_far_per_hour` on nominal
+    flights, then find every flight's first alarm time on the combined max|z| stream."""
+    from aerovalid.detect.calibration import calibrate_threshold
+    from aerovalid.detect.statistical import (
+        CUSUMDetector,
+        EWMADetector,
+        PageHinkleyDetector,
+        StreamingDetector,
+        ZScoreDetector,
+        detect_batch,
+    )
+
+    factories: dict[str, Callable[[float], StreamingDetector]] = {
+        "zscore": lambda h: ZScoreDetector(h=h, m=5),
+        "ewma": lambda limit: EWMADetector(lam=0.2, upper_limit=limit),
+        "cusum": lambda h: CUSUMDetector(k=0.5, h=h),
+        "page_hinkley": lambda lam: PageHinkleyDetector(delta=0.5, lam=lam),
+    }
+    factory = factories[name]
+    nominal_streams = [streams[fid] for fid in nominal_ids]
+    nominal_durations = [duration_by_flight[fid] for fid in nominal_ids]
+
+    def build_alarms(threshold: float) -> list[np.ndarray]:
+        return [detect_batch(factory(threshold), s) for s in nominal_streams]
+
+    threshold = calibrate_threshold(
+        build_alarms, nominal_durations, target_far_per_hour, _DETECTOR_SEARCH_RANGE[name]
+    )
+
+    alarm_times: dict[str, float | None] = {}
+    for fid, stream in streams.items():
+        alarms = detect_batch(factory(threshold), stream)
+        idx = int(np.argmax(alarms)) if alarms.any() else -1
+        alarm_times[fid] = float(t_s_by_flight[fid][idx]) if idx >= 0 else None
+    return alarm_times
+
+
+def _detect_run_mahalanobis(
+    z_by_flight: dict[str, pd.DataFrame],
+    t_s_by_flight: dict[str, np.ndarray],
+    nominal_ids: list[str],
+) -> dict[str, float | None]:
+    from aerovalid.detect.statistical import fit_mahalanobis
+
+    nominal_z = np.concatenate(
+        [z_by_flight[fid].to_numpy(dtype=np.float64) for fid in nominal_ids], axis=0
+    )
+    detector = fit_mahalanobis(nominal_z, alpha=0.01)
+
+    alarm_times: dict[str, float | None] = {}
+    for fid, z_df in z_by_flight.items():
+        rows = z_df.to_numpy(dtype=np.float64)
+        idx = next((i for i, row in enumerate(rows) if detector.update(row)), -1)
+        alarm_times[fid] = float(t_s_by_flight[fid][idx]) if idx >= 0 else None
+    return alarm_times
+
+
+def _detect_build_records(
+    alarm_times: dict[str, float | None],
+    faults_by_flight: dict[str, list[dict[str, object]]],
+    duration_by_flight: dict[str, float],
+    exceedance_by_flight: dict[str, float | None],
+) -> list[FlightRecord]:
+    records: list[FlightRecord] = []
+    for fid, t_alarm in alarm_times.items():
+        events = faults_by_flight.get(fid, [])
+        records.append(
+            FlightRecord(
+                flight_id=fid,
+                is_fault=bool(events),
+                duration_s=duration_by_flight[fid],
+                fault_type=str(events[0]["type"]) if events else None,
+                t_on_s=float(events[0]["t_on_s"]) if events else None,  # type: ignore[arg-type]
+                t_exc_s=exceedance_by_flight.get(fid),
+                t_alarm_s=t_alarm,
+            )
+        )
+    return records
+
+
+def _detect_metrics_rows(
+    variant: str, detector: str, metrics: DetectionMetrics
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = [
+        {
+            "variant": variant,
+            "detector": detector,
+            "fault_type": None,
+            "recall": metrics.recall,
+            "precision": metrics.precision,
+            "far_per_hour": metrics.far_per_hour,
+            "median_delay_s": metrics.median_delay_s,
+            "median_lead_time_s": metrics.median_lead_time_s,
+            "n_detected": metrics.n_detected,
+            "n_faulty": metrics.n_faulty,
+            "n_false_alarms": metrics.n_false_alarms,
+        }
+    ]
+    for fault_type, stats in metrics.per_fault_type.items():
+        rows.append(
+            {
+                "variant": variant,
+                "detector": detector,
+                "fault_type": fault_type,
+                "recall": stats["recall"],
+                "precision": float("nan"),
+                "far_per_hour": float("nan"),
+                "median_delay_s": float("nan"),
+                "median_lead_time_s": float("nan"),
+                "n_detected": float("nan"),
+                "n_faulty": stats["n_flights"],
+                "n_false_alarms": float("nan"),
+            }
+        )
+    return rows
+
+
+def _detect_alarm_rows(
+    variant: str, detector: str, records: list[FlightRecord]
+) -> list[dict[str, object]]:
+    return [
+        {
+            "variant": variant,
+            "detector": detector,
+            "flight_id": r.flight_id,
+            "is_fault": r.is_fault,
+            "fault_type": r.fault_type,
+            "t_on_s": r.t_on_s,
+            "t_alarm_s": r.t_alarm_s,
+        }
+        for r in records
+    ]
+
+
+def _detect_for_variant(
+    run_dir: Path,
+    variant: str,
+    flights: list[str],
+    faults_by_flight: dict[str, list[dict[str, object]]],
+    signals: list[str],
+    tolerances: dict[str, float],
+    detector_names: list[str],
+    target_far_per_hour: float,
+) -> tuple[
+    list[dict[str, object]],
+    list[dict[str, object]],
+    dict[str, object] | None,
+    dict[str, object] | None,
+]:
+    """Fits a residual baseline and runs every configured calibratable detector for
+    one variant. Returns `(metrics_rows, alarm_rows, baseline_json, roc_row)`; the last
+    two are `None` if this variant has no fault-free (nominal) flights to calibrate on."""
+    from aerovalid.detect.baseline import fit_baseline
+    from aerovalid.detect.evaluation import evaluate_detections, window_level_auc
+
+    flight_frames = {fid: _load_flight_aligned(run_dir, variant, fid) for fid in flights}
+    flight_frames = {
+        fid: df[df["t_s"] >= _DETECT_WARMUP_S].reset_index(drop=True)
+        for fid, df in flight_frames.items()
+        if not df.empty
+    }
+    nominal_ids = [fid for fid in flight_frames if not faults_by_flight.get(fid)]
+    if not flight_frames or not nominal_ids:
+        if flight_frames:
+            logger.warning("detect: variant %s has no fault-free flights; skipping.", variant)
+        return [], [], None, None
+
+    nominal_df = pd.concat([flight_frames[fid] for fid in nominal_ids], ignore_index=True)
+    baseline = fit_baseline(nominal_df, signals)
+
+    z_by_flight = {fid: baseline.z_scores(df) for fid, df in flight_frames.items()}
+    t_s_by_flight = {fid: df["t_s"].to_numpy(dtype=np.float64) for fid, df in flight_frames.items()}
+    duration_by_flight = {
+        fid: float(t[-1] - t[0]) if len(t) else 0.0 for fid, t in t_s_by_flight.items()
+    }
+    streams = {
+        fid: np.nanmax(np.abs(z.to_numpy(dtype=np.float64)), axis=1)
+        if z.shape[1]
+        else np.zeros(len(z))
+        for fid, z in z_by_flight.items()
+    }
+    exceedance_by_flight = {
+        fid: _detect_exceedance_time(df, signals, tolerances) for fid, df in flight_frames.items()
+    }
+
+    metrics_rows: list[dict[str, object]] = []
+    alarm_rows: list[dict[str, object]] = []
+    for name in detector_names:
+        if name == "mahalanobis":
+            alarm_times = _detect_run_mahalanobis(z_by_flight, t_s_by_flight, nominal_ids)
+        else:
+            alarm_times = _detect_run_univariate(
+                name, streams, t_s_by_flight, nominal_ids, duration_by_flight, target_far_per_hour
+            )
+        records = _detect_build_records(
+            alarm_times, faults_by_flight, duration_by_flight, exceedance_by_flight
+        )
+        metrics_rows.extend(_detect_metrics_rows(variant, name, evaluate_detections(records)))
+        alarm_rows.extend(_detect_alarm_rows(variant, name, records))
+
+    all_scores = np.concatenate(list(streams.values()))
+    all_labels = np.concatenate(
+        [
+            _detect_fault_window_labels(t_s_by_flight[fid], faults_by_flight.get(fid, []))
+            for fid in flight_frames
+        ]
+    )
+    roc_auc, pr_auc = window_level_auc(all_scores, all_labels)
+    roc_row: dict[str, object] = {
+        "variant": variant,
+        "score_source": "max_abs_z",
+        "roc_auc": roc_auc,
+        "pr_auc": pr_auc,
+    }
+
+    return metrics_rows, alarm_rows, json.loads(baseline.to_json()), roc_row
+
+
 @app.command()
 def detect(config: Path = _CONFIG_OPTION, run_id: str | None = _RUN_ID_OPTION) -> None:
-    """Deviation detection and early warning (FR-DET-001...008)."""
-    raise NotImplementedError("`fsa detect` is implemented in Phase 6.")
+    """FAR-calibrated statistical + Mahalanobis deviation detection on a combined
+    per-sample max|z| residual stream, per variant (FR-DET-001/002/006). ML (iforest),
+    change-point (pelt) onset estimation, and predictive early warning
+    (FR-DET-003/004/005) are the library's job (`detect/`, unit-tested), not this
+    CLI's -- see DECISIONS.md ADR-018.
+    """
+    if run_id is None:
+        raise ConfigError("`fsa detect` requires --run-id (an existing `fsa preprocess` run).")
+    run_dir = Path("runs") / run_id
+    setup_logging(run_id=run_id, log_file=run_dir / "log.txt")
+    study_config = load_config(config)
+    index = _load_aligned_index(run_dir)
+    faults_by_flight = _detect_load_faults(run_dir)
+    signals = study_config.validation.signals
+    tolerances = _resolve_tolerances(study_config.validation.tolerances, signals)
+    detector_names = [
+        name
+        for name in study_config.detect.detectors
+        if name in _DETECTOR_SEARCH_RANGE or name == "mahalanobis"
+    ]
+
+    started_at = datetime.now(UTC).isoformat()
+    start_time = time.monotonic()
+    detect_dir = run_dir / "detect"
+    detect_dir.mkdir(parents=True, exist_ok=True)
+    output_hashes: dict[str, str] = {}
+
+    baselines_summary: dict[str, object] = {}
+    metrics_rows: list[dict[str, object]] = []
+    alarm_rows: list[dict[str, object]] = []
+    roc_rows: list[dict[str, object]] = []
+
+    for variant in index["variants"]:
+        variant_metrics, variant_alarms, baseline_json, roc_row = _detect_for_variant(
+            run_dir,
+            variant,
+            index["flights"],
+            faults_by_flight,
+            signals,
+            tolerances,
+            detector_names,
+            study_config.detect.target_far_per_hr,
+        )
+        if baseline_json is None:
+            continue
+        baselines_summary[variant] = baseline_json
+        metrics_rows.extend(variant_metrics)
+        alarm_rows.extend(variant_alarms)
+        if roc_row is not None:
+            roc_rows.append(roc_row)
+
+    def _write(df: pd.DataFrame, name: str) -> None:
+        path = detect_dir / name
+        df.to_parquet(path, index=False)
+        output_hashes[str(path.relative_to(run_dir))] = hash_file(path)
+
+    _write(pd.DataFrame(alarm_rows), "alarms.parquet")
+    _write(pd.DataFrame(metrics_rows), "detection_metrics.parquet")
+    _write(pd.DataFrame(roc_rows), "roc.parquet")
+    baselines_path = detect_dir / "baselines.json"
+    baselines_path.write_text(json.dumps(baselines_summary, indent=2))
+    output_hashes[str(baselines_path.relative_to(run_dir))] = hash_file(baselines_path)
+
+    manifest = read_manifest(run_dir) if (run_dir / "run_manifest.json").exists() else None
+    if manifest is not None:
+        manifest = update_step(
+            manifest,
+            "detect",
+            "completed",
+            started_at=started_at,
+            completed_at=datetime.now(UTC).isoformat(),
+            duration_s=time.monotonic() - start_time,
+            output_hashes=output_hashes,
+            extra={"n_variants": len(baselines_summary)},
+        )
+        write_manifest(manifest, run_dir)
+    logger.info(
+        "detect: wrote detection metrics for %d variant(s) to %s",
+        len(baselines_summary),
+        detect_dir,
+    )
 
 
 @app.command()

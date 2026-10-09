@@ -205,3 +205,41 @@ nested CV search never sees outer-test rows (`test_cv.py`); `fsa generate ->
 preprocess -> predict` verified end-to-end (`@pytest.mark.slow` CLI test) producing
 `cv_results`/`forecasts`/`intervals`/`explain` parquet artifacts and a saved model per
 variant. `make lint test` green at 88% coverage.
+
+## Phase 6 — Deviation Detection
+
+- Added `detect/baseline.py` (robust median/MAD residual normalisation, optionally per
+  condition bin with a fallback for small bins, JSON-serialisable), `detect/
+  statistical.py` (z-score, EWMA, CUSUM, Page-Hinkley -- each a streaming
+  `update(z) -> bool`/`reset()` detector, replayed batch-wise by `detect_batch` so
+  batch and streaming are identical by construction; Mahalanobis via a robust MCD
+  covariance and a chi-squared threshold), `detect/ml.py` (Isolation Forest over
+  rolling-window mean/std/slope features, `score(window) -> float`), `detect/
+  changepoint.py` (`ruptures` PELT onset estimation), `detect/calibration.py`
+  (bisection to a target false-alarm rate per flight-hour, counting alarm episodes
+  rather than raw alarming samples), `detect/early_warning.py` (wraps a `predict/`
+  split-conformal model to estimate `P(|res(t+h)| > tol)`), and `detect/evaluation.py`
+  (per-flight detection delay/lead time/recall/precision/FAR, per-fault-type
+  breakdown, window-level ROC/PR AUC).
+- Implemented `fsa detect`: per variant, fits a residual baseline on fault-free
+  flights, then runs every FAR-calibrated statistical detector configured in
+  `detect.detectors` plus Mahalanobis on a combined per-sample `max_s |z_s|` stream
+  (matching the z-score detector's own spec definition), writing `detect/
+  {baselines.json, alarms.parquet, detection_metrics.parquet, roc.parquet}`. Discovered
+  and fixed a real data characteristic while validating this against a demo run: every
+  flight's first ~1-2 s shows a sim-vs-telemetry startup transient that swamped every
+  detector except z-score's debounce -- `fsa detect` now discards each flight's first
+  2 s before fitting or scoring, a standard monitoring-system practice, not a
+  results-shaping hack. Isolation Forest, PELT onset estimation, and predictive early
+  warning are library-only (not CLI-wired) -- see ADR-018.
+
+DoD: every streaming detector's batch replay matches its live `update`-by-`update`
+output exactly (`test_detect_statistical.py`); `calibrate_threshold` hits a target
+false-alarm rate within 25% on synthetic nominal data (`test_detect_calibration.py`);
+PELT recovers an injected mean-shift onset within 3 s, median across 8 seeded trials
+(`test_detect_changepoint.py`); `fsa generate -> preprocess -> detect` verified
+end-to-end (`@pytest.mark.slow` CLI test) on a 6-flight fixture with a real sampled
+fault, producing calibrated alarms and metrics for every configured detector. Full S6
+benchmark validation (median delay ≤ 5 s, FAR ≤ 1/flight-hour, recall ≥ 0.9) against
+the real simulator deferred to Phase 8/9's `fsa benchmark` (ADR-015/018 precedent).
+`make lint test` green.

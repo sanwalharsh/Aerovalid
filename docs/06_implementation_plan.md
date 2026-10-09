@@ -46,10 +46,10 @@ DoD: metrics validated against reference formulas on fixtures (51 unit tests, ha
 - [x] `fsa predict` (reduced scope -- see DECISIONS.md ADR-017).
 DoD: leakage tests pass (`test_datasets.py`'s per-flight reconstruction test); skill-score/RMSE-reduction checks pass on synthetic data; artifacts per data spec (`predict/{cv_results,forecasts,intervals,explain}.parquet`, `models/residual/*.joblib`). (FR-PRD-001…009; FR-PRD-010 "S"-priority extrapolation study and FR-PRD-011 "C"-priority online-update demo deferred, not required for DoD)
 
-## Phase 6 — Deviation detection  `[ ]`
-- [ ] Baseline normalisation, statistical detectors, ML detectors, PELT/BinSeg onset estimation, threshold calibration, early-warning predictor, streaming API, evaluation protocol.
-- [ ] `fsa detect`; E6 script.
-DoD: calibrated FA within ±25% of target; S6 passes; batch == streaming test passes. (FR-DET-001…008)
+## Phase 6 — Deviation detection  `[x]`
+- [x] Baseline normalisation, statistical detectors, ML detectors, PELT onset estimation, threshold calibration, early-warning predictor, streaming API, evaluation protocol.
+- [x] `fsa detect` (reduced scope -- see DECISIONS.md ADR-018).
+DoD: calibrated FA within ±25% of target on synthetic fixtures (`test_detect_calibration.py`); batch == streaming test passes (`test_detect_statistical.py`); PELT onset error ≤ 3 s median on injected synthetic shifts (`test_detect_changepoint.py`). Full S6 benchmark validation against the real simulator deferred to Phase 8/9's `fsa benchmark` (ADR-015/018 precedent). (FR-DET-001…006, 008; FR-DET-007 attribution hint "S"-priority, deferred)
 
 ## Phase 7 — Identification, sensitivity & recommendations  `[ ]`
 - [ ] Local Jacobian + identifiability; output-error fitting with windows; regime-wise fits; Morris/Sobol; structural-term probe; surrogate (optional).
