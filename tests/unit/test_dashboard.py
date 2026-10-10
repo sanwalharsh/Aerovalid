@@ -48,3 +48,51 @@ def test_dashboard_loads_demo_run_without_error(
     at = AppTest.from_file(str(_APP_PATH))
     at.run()
     assert not at.exception
+
+
+@pytest.mark.req("FR-RPT-004")
+def test_dashboard_skips_password_gate_when_env_var_unset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Local use (`fsa dashboard`) never sets `AEROVALID_DASHBOARD_PASSWORD`, so the
+    gate must not appear -- this is what every other dashboard test already relies on."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AEROVALID_DASHBOARD_PASSWORD", raising=False)
+    at = AppTest.from_file(str(_APP_PATH))
+    at.run()
+    assert not at.exception
+    assert len(at.text_input) == 0
+
+
+@pytest.mark.req("FR-RPT-004")
+def test_dashboard_password_gate_blocks_wrong_password(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AEROVALID_DASHBOARD_PASSWORD", "s3cret")
+    at = AppTest.from_file(str(_APP_PATH))
+    at.run()
+    assert not at.exception
+    assert len(at.text_input) == 1  # the password prompt, nothing else rendered
+
+    at.text_input[0].set_value("wrong-password").run()
+    at.button[0].click().run()
+    assert not at.exception
+    assert any("Incorrect password" in e.value for e in at.error)
+    assert len(at.text_input) == 1  # still gated
+
+
+@pytest.mark.req("FR-RPT-004")
+def test_dashboard_password_gate_admits_correct_password(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AEROVALID_DASHBOARD_PASSWORD", "s3cret")
+    _write_run_fixture(tmp_path / "runs", "clitest")
+
+    at = AppTest.from_file(str(_APP_PATH))
+    at.run()
+    at.text_input[0].set_value("s3cret").run()
+    at.button[0].click().run()
+    assert not at.exception
+    assert len(at.tabs) == 5  # past the gate: the real dashboard rendered

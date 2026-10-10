@@ -17,6 +17,8 @@ COPY src/ src/
 RUN pip install --no-cache-dir "${EXTRAS}"
 
 COPY configs/ configs/
+COPY docker/entrypoint.sh docker/entrypoint.sh
+RUN chmod +x docker/entrypoint.sh
 
 # `runs/`/`data/`/`reports/` are git-ignored and expected to be bind-mounted in:
 #   docker run -v "$PWD/runs:/app/runs" aerovalid run-all --config configs/default.yaml --run-id demo
@@ -25,8 +27,9 @@ RUN mkdir -p runs data reports \
     && chown -R aerovalid:aerovalid /app
 USER aerovalid
 
-# `fsa dashboard` serves Streamlit on its default port.
+# `fsa dashboard` (local) and `serve-dashboard` (deployed, see docker/entrypoint.sh)
+# both serve Streamlit on this port by default.
 EXPOSE 8501
 
-ENTRYPOINT ["fsa"]
+ENTRYPOINT ["/app/docker/entrypoint.sh"]
 CMD ["--help"]

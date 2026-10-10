@@ -131,8 +131,32 @@ def _run_comparison_tab() -> None:
         st.info("Neither run has a generated report yet (`fsa report`).")
 
 
+def _check_password() -> bool:
+    """Gate the dashboard behind a shared password when `AEROVALID_DASHBOARD_
+    PASSWORD` is set (a deployed, publicly-reachable instance); local use
+    (`fsa dashboard`/`make dashboard`) leaves that env var unset and skips the gate
+    entirely, so this never affects local/test behaviour."""
+    required = os.environ.get("AEROVALID_DASHBOARD_PASSWORD")
+    if not required:
+        return True
+    if st.session_state.get("authenticated"):
+        return True
+
+    st.title("AeroValidate")
+    entered = st.text_input("Password", type="password")
+    if st.button("Log in"):
+        if entered == required:
+            st.session_state["authenticated"] = True
+            st.rerun()
+        else:
+            st.error("Incorrect password.")
+    return False
+
+
 def main() -> None:
     st.set_page_config(page_title="AeroValidate dashboard", layout="wide")
+    if not _check_password():
+        return
     st.title("AeroValidate")
 
     runs = _list_runs()

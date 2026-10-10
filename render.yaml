@@ -1,0 +1,24 @@
+# Render Blueprint (https://render.com/docs/blueprint-spec): connect this repo's
+# GitHub remote in the Render dashboard ("New +" -> "Blueprint") and Render reads
+# this file automatically. See docs/DEPLOY.md for the full walkthrough.
+#
+# `plan: free` here on purpose: Render's free tier doesn't support persistent disks,
+# so this ships without one -- the entrypoint reseeds a small demo run on every
+# restart/deploy (docker/entrypoint.sh), which is fine for a public demo link. If
+# you upgrade to a paid plan and want runs to survive restarts, change `plan` below
+# and add:
+#   disk:
+#     name: aerovalid-runs
+#     mountPath: /app/runs
+#     sizeGB: 1
+services:
+  - type: web
+    name: aerovalid-dashboard
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerCommand: serve-dashboard
+    plan: free
+    envVars:
+      - key: AEROVALID_DASHBOARD_PASSWORD
+        sync: false # set the actual value in the Render dashboard; never commit it
+    healthCheckPath: /_stcore/health # Streamlit's own built-in health endpoint
