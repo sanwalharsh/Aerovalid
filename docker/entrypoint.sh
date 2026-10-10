@@ -1,12 +1,13 @@
 #!/bin/sh
-# Dual-mode entrypoint: `docker run aerovalid <fsa-args>` runs the CLI as before;
-# `docker run aerovalid serve-dashboard` seeds a small demo run (if `runs/` is
-# empty) and serves the Streamlit dashboard on $PORT -- the mode a PaaS host
-# (Render/Railway/Fly) runs as its web service command.
+# Dual-mode entrypoint. With no arguments (the Dockerfile's own default CMD) or
+# `serve-dashboard` explicitly, seeds a small demo run (if `runs/` is empty) and
+# serves the Streamlit dashboard on $PORT -- this is what a PaaS host runs by
+# default, with no reliance on it correctly overriding the Dockerfile's command.
+# `docker run aerovalid <fsa-args>` (e.g. `generate --config ...`) still runs the
+# CLI instead.
 set -e
 
-if [ "$1" = "serve-dashboard" ]; then
-    shift
+serve_dashboard() {
     if [ -z "$(ls -A runs 2>/dev/null)" ]; then
         echo "entrypoint: runs/ is empty, seeding a small demo run..."
         fsa run-all --config configs/default.yaml --run-id demo --profile demo \
@@ -17,8 +18,11 @@ if [ "$1" = "serve-dashboard" ]; then
     exec streamlit run src/aerovalid/app/main.py \
         --server.port "${PORT:-8501}" \
         --server.address 0.0.0.0 \
-        --server.headless true \
-        "$@"
+        --server.headless true
+}
+
+if [ "$#" -eq 0 ] || [ "$1" = "serve-dashboard" ]; then
+    serve_dashboard
 else
     exec fsa "$@"
 fi

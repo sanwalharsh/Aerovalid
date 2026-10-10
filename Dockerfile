@@ -27,9 +27,13 @@ RUN mkdir -p runs data reports \
     && chown -R aerovalid:aerovalid /app
 USER aerovalid
 
-# `fsa dashboard` (local) and `serve-dashboard` (deployed, see docker/entrypoint.sh)
-# both serve Streamlit on this port by default.
+# `fsa dashboard` (local) and the default (no-args) container command both serve
+# Streamlit on this port -- see docker/entrypoint.sh.
 EXPOSE 8501
 
 ENTRYPOINT ["/app/docker/entrypoint.sh"]
-CMD ["--help"]
+# No args -> serve the dashboard by default (what a PaaS host runs with no
+# command override configured, per Render's own docs: "If omitted, Render uses
+# the CMD defined in the Dockerfile"). Pass CLI args instead to run `fsa`, e.g.
+# `docker run aerovalid generate --config configs/default.yaml --run-id demo`.
+CMD []

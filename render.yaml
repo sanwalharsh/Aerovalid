@@ -16,7 +16,9 @@ services:
     name: aerovalid-dashboard
     runtime: docker
     dockerfilePath: ./Dockerfile
-    dockerCommand: serve-dashboard
+    # No dockerCommand: the Dockerfile's own default CMD (no args) already
+    # serves the dashboard -- avoids depending on this field's exact override
+    # semantics. Set it explicitly only if you need something else.
     plan: free
     envVars:
       - key: AEROVALID_DASHBOARD_PASSWORD

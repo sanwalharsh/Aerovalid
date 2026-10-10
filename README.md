@@ -117,13 +117,15 @@ Builds a lean image with the core pipeline (optional `torch`/`lightgbm`/`shap`/
 gracefully without them). Bind-mount `runs/` (and `data/`/`reports/` if you use them)
 so output persists outside the container.
 
-To serve the dashboard from the same image instead of running a CLI command:
+The dashboard is the image's default command (no args) — a PaaS host just runs the
+image as-is:
 
 ```bash
-docker run -p 8501:8501 -v "$PWD/runs:/app/runs" aerovalid serve-dashboard
+docker run -p 8501:8501 -v "$PWD/runs:/app/runs" aerovalid
 ```
 
-Open `http://localhost:8501`. Set `AEROVALID_DASHBOARD_PASSWORD` (`-e
+(`... aerovalid serve-dashboard` also works, explicitly.) Open `http://localhost:
+8501`. Set `AEROVALID_DASHBOARD_PASSWORD` (`-e
 AEROVALID_DASHBOARD_PASSWORD=...`) to require a password before the dashboard shows
 anything — recommended whenever it's reachable by anyone other than you. See
 `docs/DEPLOY.md` for deploying this to a public URL on Render.
