@@ -78,6 +78,7 @@ plugins = ["pydantic.mypy"]
 module = [
   "ruptures.*", "SALib.*", "pandera.*", "joblib.*", "pyulog.*", "pymavlink.*", "scipy.*",
   "scikit_posthocs.*", "statsmodels.*", "sklearn.*", "torch.*", "shap.*", "lightgbm.*",
+  "plotly.*",
 ]
 ignore_missing_imports = true
 

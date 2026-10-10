@@ -6,7 +6,12 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import cast
+
+import pandas as pd
 
 
 @dataclass(frozen=True)
@@ -135,3 +140,91 @@ def build_executive_summary(facts: SummaryFacts) -> list[Statement]:
         )
 
     return statements
+
+
+def _read_parquet_or_empty(path: Path) -> pd.DataFrame:
+    return pd.read_parquet(path) if path.exists() else pd.DataFrame()
+
+
+def _read_json_list_or_empty(path: Path) -> list[dict[str, object]]:
+    return json.loads(path.read_text()) if path.exists() else []
+
+
+def gather_summary_facts(run_id: str, index: dict[str, list[str]], run_dir: Path) -> SummaryFacts:
+    """
+    Read whichever phase artifacts exist under `run_dir` into `SummaryFacts`
+    (FR-RPT-003/006). Shared by `report/builder.py` (the static HTML report) and
+    `app/main.py` (the live dashboard's Overview page) so both tell the same story
+    from the same numbers.
+
+    Parameters
+    ----------
+    run_id : str
+    index : dict[str, list[str]]
+        `aligned/index.json`'s `{"flights": [...], "variants": [...]}`.
+    run_dir : Path
+        `runs/<run_id>/`.
+
+    Returns
+    -------
+    SummaryFacts
+    """
+    ranking = _read_parquet_or_empty(run_dir / "validation" / "variant_ranking.parquet")
+    best_variant = str(ranking.iloc[0]["variant"]) if not ranking.empty else None
+    best_mean_rank = float(ranking.iloc[0]["mean_rank"]) if not ranking.empty else None
+
+    cv_results = _read_parquet_or_empty(run_dir / "predict" / "cv_results.parquet")
+    hybrid_rows = (
+        cv_results[cv_results.get("task") == "hybrid"] if not cv_results.empty else cv_results
+    )
+    predict_reduction = (
+        float(hybrid_rows["rmse_reduction_vs_sim_only_pct"].mean())
+        if not hybrid_rows.empty and "rmse_reduction_vs_sim_only_pct" in hybrid_rows.columns
+        else None
+    )
+
+    intervals = _read_parquet_or_empty(run_dir / "predict" / "intervals.parquet")
+    predict_coverage = float(intervals["coverage"].mean()) if not intervals.empty else None
+
+    detect_metrics = _read_parquet_or_empty(run_dir / "detect" / "detection_metrics.parquet")
+    overall_detect = (
+        detect_metrics[detect_metrics["fault_type"].isna()]
+        if not detect_metrics.empty
+        else detect_metrics
+    )
+    detect_recall = float(overall_detect["recall"].mean()) if not overall_detect.empty else None
+    detect_far = float(overall_detect["far_per_hour"].mean()) if not overall_detect.empty else None
+    detect_delay = (
+        float(overall_detect["median_delay_s"].dropna().mean())
+        if not overall_detect.empty and overall_detect["median_delay_s"].notna().any()
+        else None
+    )
+
+    recommendations = _read_json_list_or_empty(run_dir / "identify" / "recommendations.json")
+    top_param: str | None = None
+    top_change: float | None = None
+    if recommendations:
+        top = recommendations[0]
+        top_param = cast(str, top["parameter"])
+        top_change = cast(float, top["estimated_change_pct"])
+
+    revalidation = _read_parquet_or_empty(run_dir / "identify" / "revalidation.parquet")
+    revalidation_reduction = (
+        float(revalidation["rmse_reduction_pct"].mean()) if not revalidation.empty else None
+    )
+
+    return SummaryFacts(
+        run_id=run_id,
+        n_flights=len(index.get("flights", [])),
+        variants=index.get("variants", []),
+        best_variant=best_variant,
+        best_variant_mean_rank=best_mean_rank,
+        predict_rmse_reduction_vs_sim_only_pct=predict_reduction,
+        predict_interval_coverage=predict_coverage,
+        detect_recall=detect_recall,
+        detect_far_per_hour=detect_far,
+        detect_median_delay_s=detect_delay,
+        identify_top_parameter=top_param,
+        identify_top_parameter_change_pct=top_change,
+        identify_revalidation_rmse_reduction_pct=revalidation_reduction,
+    )

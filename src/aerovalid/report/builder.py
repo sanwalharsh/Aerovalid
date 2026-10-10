@@ -30,7 +30,11 @@ from matplotlib.figure import Figure
 from aerovalid.core.manifest import read_manifest
 from aerovalid.core.signals import get_signal
 from aerovalid.report import figures
-from aerovalid.report.summary import SummaryFacts, build_executive_summary, build_summary_json
+from aerovalid.report.summary import (
+    build_executive_summary,
+    build_summary_json,
+    gather_summary_facts,
+)
 from aerovalid.report.tables import write_table
 
 _TEMPLATE_DIR = Path(__file__).parent / "templates"
@@ -195,72 +199,6 @@ def _identification_section(
     return section
 
 
-def _gather_summary_facts(
-    run_id: str,
-    index: dict[str, list[str]],
-    run_dir: Path,
-) -> SummaryFacts:
-    ranking = _read_parquet_or_empty(run_dir / "validation" / "variant_ranking.parquet")
-    best_variant = str(ranking.iloc[0]["variant"]) if not ranking.empty else None
-    best_mean_rank = float(ranking.iloc[0]["mean_rank"]) if not ranking.empty else None
-
-    cv_results = _read_parquet_or_empty(run_dir / "predict" / "cv_results.parquet")
-    hybrid_rows = (
-        cv_results[cv_results.get("task") == "hybrid"] if not cv_results.empty else cv_results
-    )
-    predict_reduction = (
-        float(hybrid_rows["rmse_reduction_vs_sim_only_pct"].mean())
-        if not hybrid_rows.empty and "rmse_reduction_vs_sim_only_pct" in hybrid_rows.columns
-        else None
-    )
-
-    intervals = _read_parquet_or_empty(run_dir / "predict" / "intervals.parquet")
-    predict_coverage = float(intervals["coverage"].mean()) if not intervals.empty else None
-
-    detect_metrics = _read_parquet_or_empty(run_dir / "detect" / "detection_metrics.parquet")
-    overall_detect = (
-        detect_metrics[detect_metrics["fault_type"].isna()]
-        if not detect_metrics.empty
-        else detect_metrics
-    )
-    detect_recall = float(overall_detect["recall"].mean()) if not overall_detect.empty else None
-    detect_far = float(overall_detect["far_per_hour"].mean()) if not overall_detect.empty else None
-    detect_delay = (
-        float(overall_detect["median_delay_s"].dropna().mean())
-        if not overall_detect.empty and overall_detect["median_delay_s"].notna().any()
-        else None
-    )
-
-    recommendations = _read_json_list_or_none(run_dir / "identify" / "recommendations.json")
-    top_param: str | None = None
-    top_change: float | None = None
-    if recommendations:
-        top = recommendations[0]
-        top_param = cast(str, top["parameter"])
-        top_change = cast(float, top["estimated_change_pct"])
-
-    revalidation = _read_parquet_or_empty(run_dir / "identify" / "revalidation.parquet")
-    revalidation_reduction = (
-        float(revalidation["rmse_reduction_pct"].mean()) if not revalidation.empty else None
-    )
-
-    return SummaryFacts(
-        run_id=run_id,
-        n_flights=len(index.get("flights", [])),
-        variants=index.get("variants", []),
-        best_variant=best_variant,
-        best_variant_mean_rank=best_mean_rank,
-        predict_rmse_reduction_vs_sim_only_pct=predict_reduction,
-        predict_interval_coverage=predict_coverage,
-        detect_recall=detect_recall,
-        detect_far_per_hour=detect_far,
-        detect_median_delay_s=detect_delay,
-        identify_top_parameter=top_param,
-        identify_top_parameter_change_pct=top_change,
-        identify_revalidation_rmse_reduction_pct=revalidation_reduction,
-    )
-
-
 def build_report(run_dir: Path, run_id: str) -> ReportResult:
     """
     Build the full HTML report for a run (FR-RPT-001): executive summary, data & QC,
@@ -293,7 +231,7 @@ def build_report(run_dir: Path, run_id: str) -> ReportResult:
     sync_estimates = _read_parquet_or_empty(run_dir / "sync" / "sync_estimates.parquet")
     manifest = read_manifest(run_dir) if (run_dir / "run_manifest.json").exists() else None
 
-    facts = _gather_summary_facts(run_id, index, run_dir)
+    facts = gather_summary_facts(run_id, index, run_dir)
     summary_json_path = reports_dir / "summary.json"
     summary_json_path.write_text(json.dumps(build_summary_json(facts), indent=2))
     executive_summary = build_executive_summary(facts)
