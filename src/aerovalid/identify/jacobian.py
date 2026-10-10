@@ -94,7 +94,7 @@ def identifiability(
     condition_number = (
         float(np.linalg.cond(jtj)) if n > 1 else float(np.linalg.cond(jtj.reshape(1, 1)))
     )
-    covariance = s_squared * np.linalg.pinv(jtj)
+    covariance: NDArray[np.float64] = (s_squared * np.linalg.pinv(jtj)).astype(np.float64)
     std_errors = np.sqrt(np.clip(np.diag(covariance), 0.0, None))
 
     ci_95 = {

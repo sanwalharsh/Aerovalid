@@ -71,7 +71,8 @@ def cliffs_delta(a: NDArray[np.float64], b: NDArray[np.float64]) -> float:
     """
     a_arr, b_arr = np.asarray(a, dtype=np.float64), np.asarray(b, dtype=np.float64)
     diff = a_arr[:, None] - b_arr[None, :]
-    return float((np.sum(diff > 0) - np.sum(diff < 0)) / (len(a_arr) * len(b_arr)))
+    n_pos, n_neg = np.count_nonzero(diff > 0), np.count_nonzero(diff < 0)
+    return float((n_pos - n_neg) / (len(a_arr) * len(b_arr)))
 
 
 def hodges_lehmann_shift(differences: NDArray[np.float64]) -> float:

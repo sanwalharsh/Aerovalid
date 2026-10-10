@@ -64,4 +64,9 @@ jobs:
       - name: Install
         run: pip install -e ".[dev]"
       - name: Smoke test
-        run: pytest -q -m "not slow"
+        # --no-cov: this matrix is a fast cross-platform correctness check, not the
+        # coverage gate (lint-test already enforces --cov-fail-under=85 on the full
+        # suite, slow tests included) -- excluding slow tests here predictably drops
+        # measured coverage well below 85% regardless of code health, which isn't
+        # this job's job.
+        run: pytest -q -m "not slow" --no-cov
